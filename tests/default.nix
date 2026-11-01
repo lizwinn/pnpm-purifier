@@ -84,6 +84,26 @@ in
 {
   inherit cli;
 
+  # A caller needs only the pnpm major used by its project, rather than
+  # every major that the purifier can build with.
+  available-pnpm =
+    let
+      buildWithOnly12 = lib.callPackageWith (removeAttrs pkgs [
+        "pnpm_10"
+        "pnpm_11"
+      ]) ../nix/lib/build-pnpm-project.nix { inherit purifier; };
+      restricted = buildWithOnly12 { src = ./fixtures/workspace; };
+      missing = buildPnpmProject.override { pnpm_12 = null; };
+      explicit = missing {
+        src = ./fixtures/workspace;
+        pnpm = pkgs.pnpm_12;
+      };
+    in
+    assert restricted.packages."@example/app".drvPath == app.drvPath;
+    assert fails (missing { src = ./fixtures/workspace; }).packages."@example/app".drvPath;
+    assert explicit.packages."@example/app".drvPath == app.drvPath;
+    pkgs.runCommand "available-pnpm" { } "touch $out";
+
   # The fixture packages themselves, which the conformance-rebuild job
   # builds a second time with `nix build --rebuild`.
   fixture-app = app;

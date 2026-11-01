@@ -35,9 +35,9 @@ scope@{
   # The pnpm packages, of which the builder takes the one of the major
   # version the project uses, and `pnpm` when nothing names a version.
   pnpm,
-  pnpm_10,
-  pnpm_11,
-  pnpm_12,
+  pnpm_10 ? null,
+  pnpm_11 ? null,
+  pnpm_12 ? null,
   lib,
   stdenv,
   makeWrapper,
@@ -95,9 +95,12 @@ let
     else
       let
         major = builtins.head (lib.splitString "." pnpmVersion);
+        available = scope."pnpm_${major}" or null;
       in
-      scope."pnpm_${major}"
-        or (throw "pnpm-purifier: the builder takes pnpm 10, 11 and 12, not pnpm ${major} for the pnpm ${pnpmVersion} the project uses; pass `pnpm`.");
+      if available != null then
+        available
+      else
+        throw "pnpm-purifier: this package set has no pnpm_${major} for the pnpm ${pnpmVersion} the project uses; pass `pnpm`.";
 
   inherit (lock.pnpm) registries;
   registriesFile = writeText "pnpm-purifier-registries.json" (builtins.toJSON registries);
