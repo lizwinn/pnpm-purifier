@@ -101,7 +101,8 @@ let
 
   dependencies = callPackage ./dependencies.nix { inherit lockFile fetchurl; };
 
-  cli = ../../src/pnpm-purifier.mjs;
+  # The command-line program with the module it imports.
+  cli = "${../../src}/pnpm-purifier.mjs";
 
   # A derivation name from a package name: @example/app becomes example-app.
   derivationName = name: lib.replaceStrings [ "/" ] [ "-" ] (lib.removePrefix "@" name);

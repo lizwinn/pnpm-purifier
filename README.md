@@ -153,6 +153,36 @@ project's `packageManager` field names, from the flake's nixpkgs (pnpm 10,
 11 or 12). `PNPM_PURIFIER_PNPM` names another pnpm, and `PNPM_PURIFIER=0`
 turns interactive mode off.
 
+### Day to day
+
+`pnpm-purifier` takes pnpm's arguments, so it can stand in for `pnpm`, for
+example through `alias pnpm=pnpm-purifier`.
+
+| Command | What runs |
+|---|---|
+| `pnpm-purifier install` | pnpm installs offline, from the locked files, which Nix fetches once and keeps under a GC root in `.pnpm-purifier/` |
+| `pnpm-purifier run build`, `test`, `exec tsc`, a script name | pnpm itself, since these download nothing |
+| `pnpm-purifier add ms`, `update`, `remove ms`, `install ms` | pnpm online, since resolving versions reads registry metadata, then `pnpm-purifier lock` when `pnpm-lock.yaml` changed |
+| `pnpm-purifier --online <arguments>` | pnpm online, then `pnpm-purifier lock` when `pnpm-lock.yaml` changed |
+
+An editor's language server, such as the TypeScript server, reads
+`node_modules`. An offline install writes the same `node_modules` an online
+one does, so the editor works as it does with pnpm alone.
+
+Each common mistake stops with what went wrong and the command to run.
+
+| Mistake | Message |
+|---|---|
+| `pnpm-lock.yaml` changed after `pnpm-purifier lock` | interactive mode says the lock is stale, runs pnpm online and names `pnpm-purifier lock`; the Nix build fails during evaluation with the same command |
+| `package.json` changed, and an offline install needs to resolve | pnpm-purifier names the `pnpm-purifier --online` command to run |
+| A file is missing from the lock | the offline install and the Nix build name the file and `pnpm-purifier lock` |
+| `pnpm-purifier.lock.json` was edited by hand | interactive mode and the Nix build name what is wrong and `pnpm-purifier lock`; a wrong hash makes Nix's fetch fail with the URL and both hashes |
+| A locked file does not match `pnpm-lock.yaml` | pnpm refuses it with `ERR_PNPM_TARBALL_INTEGRITY` |
+
+A lock run installs twice: once online, recording, and once offline from
+what it recorded. On the fixtures it takes a few seconds; most of the time
+of a larger project goes to the first, online install.
+
 ## Limitations
 
 - Registry metadata is never locked, because a registry changes it each

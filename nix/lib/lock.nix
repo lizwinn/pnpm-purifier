@@ -7,10 +7,30 @@ let
 
   supportedVersion = import ./lock-version.nix;
   storeName = import ./store-name.nix;
+
+  # A lockfile that is not the shape `pnpm-purifier lock` writes, such as
+  # one edited by hand, stops evaluation with what is wrong.
+  malformed =
+    problem:
+    throw "pnpm-purifier: ${toString lockFile} ${problem}. Run `pnpm-purifier lock` to write it again.";
+  checkArtifact =
+    a:
+    if !(builtins.isAttrs a) || !(a ? path) then
+      malformed "has an artifact without a path"
+    else if a ? contents || a ? git || (a ? url && a ? mirrors && a ? hash) then
+      true
+    else
+      malformed "has an artifact (${a.path}) that is none of a file, a git or an inline entry";
 in
+assert builtins.isAttrs lock || malformed "is not a JSON object";
 assert
-  lock.version == supportedVersion
-  || throw "pnpm-purifier: ${toString lockFile} has lock format version ${toString lock.version}; this library reads version ${toString supportedVersion}. Run `pnpm-purifier lock` with the pnpm-purifier version that provides this library.";
+  (lock.version or null) == supportedVersion
+  || throw "pnpm-purifier: ${toString lockFile} has lock format version ${
+    toString (lock.version or "none")
+  }; this library reads version ${toString supportedVersion}. Run `pnpm-purifier lock` with the pnpm-purifier version that provides this library.";
+assert builtins.isList (lock.artifacts or null) || malformed "has no list of artifacts";
+assert builtins.isList (lock.projects or null) || malformed "has no list of projects";
+assert builtins.all checkArtifact lock.artifacts;
 lock
 // {
   inherit storeName;

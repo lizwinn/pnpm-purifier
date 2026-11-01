@@ -14,8 +14,15 @@
 //                                    runs CMD with pnpm pointed at a registry
 //                                    that serves only the files in M (the Nix
 //                                    build uses this)
+//   pnpm-purifier --online [PNPM ARGS...]
+//                                    runs pnpm with the network, and locks
+//                                    again when pnpm-lock.yaml changes
 //   pnpm-purifier [PNPM ARGS...]     runs pnpm on the locked downloads,
-//                                    realized through Nix, offline
+//                                    realized through Nix, offline; a command
+//                                    that resolves versions (add, update,
+//                                    remove, ...) runs as with --online, and
+//                                    one that installs nothing (run, test,
+//                                    exec, ...) runs pnpm as it is
 //
 // The registry is an HTTP server on the loopback interface. Its URL space
 // mirrors the upstream URLs: GET /https/registry.npmjs.org/ms/-/ms-2.1.3.tgz
@@ -29,6 +36,8 @@
 // pnpm runs: in a copy of the project that the purifier owns (the lock run
 // and the Nix build), and in place for the length of an interactive
 // command.
+//
+// The parsing and the path rules are in lib.mjs.
 
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -38,16 +47,29 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
-import zlib from "node:zlib";
+import {
+  LOCK_FILE,
+  LOCK_PLATFORMS,
+  LOCK_VERSION,
+  isMetadata,
+  isResolving,
+  localRegistry,
+  localizeMetadata,
+  lockImporters,
+  lockProblems,
+  needsRegistry,
+  outsideResolutions,
+  platformFilters,
+  registryCredentials,
+  registryLines,
+  restoreLockText,
+  rewriteLockText,
+  trimPackument,
+  urlOfPath,
+} from "./lib.mjs";
 
-const LOCK_FILE = "pnpm-purifier.lock.json";
-const LOCK_VERSION = 1;
 const STATE_DIR = ".pnpm-purifier";
 
-// The Nix systems a lock covers. pnpm installs the optional dependencies of
-// every listed platform during the lock run, so the lock holds the native
-// packages (such as @esbuild/linux-arm64) of each system.
-const LOCK_PLATFORMS = { os: ["linux", "darwin"], cpu: ["x64", "arm64"], libc: ["glibc"] };
 const PLATFORM_ARGS = [
   ...LOCK_PLATFORMS.os.map((o) => `--os=${o}`),
   ...LOCK_PLATFORMS.cpu.map((c) => `--cpu=${c}`),
@@ -70,147 +92,33 @@ function hexDigest(buffer) {
   return createHash("sha256").update(buffer).digest("hex");
 }
 
-// The lockfile path of an upstream URL: the scheme, the host (a port joins
-// it with "%3A"), then the URL path, as in https/registry.npmjs.org/ms/...
-function pathOfUrl(url) {
-  const u = new URL(url);
-  const scheme = u.protocol.replace(/:$/, "");
-  const host = u.port ? `${u.hostname}%3A${u.port}` : u.hostname;
-  return `${scheme}/${host}${u.pathname}`;
-}
-
-function urlOfPath(relPath) {
-  const [scheme, host, ...rest] = relPath.split("/");
-  if (scheme !== "https" && scheme !== "http") return null;
-  return `${scheme}://${host.replace("%3A", ":")}/${rest.join("/")}`;
-}
-
-// The lockfile path of a git dependency: git/, the host and repository
-// path, then the commit (and the subdirectory, when it names one).
-function pathOfGit(repo, commit, subdirectory) {
-  const u = new URL(repo.replace(/^git\+/, ""));
-  const repoPath = u.pathname.replace(/\.git$/, "");
-  const sub = subdirectory ? `/${subdirectory.replace(/^\/+|\/+$/g, "")}` : "";
-  return `git/${u.hostname}${repoPath}/${commit}${sub}/package.tgz`;
-}
-
-// The registry URL pnpm uses for an upstream registry, on a server at
-// `base` (http://127.0.0.1:PORT/).
-function localRegistry(base, upstream) {
-  const p = pathOfUrl(upstream);
-  return base + (p.endsWith("/") ? p : p + "/");
-}
-
 // --- pnpm-lock.yaml ---------------------------------------------------------
 
-// pnpm writes each resolution as a one-line YAML flow mapping, such as
-//   resolution: {integrity: sha512-..., tarball: https://...}
-// Its values hold no ", " followed by a key.
-function parseFlowMap(text) {
-  return text.split(/,\s+(?=[A-Za-z]+:\s)/).map((item) => {
-    const i = item.indexOf(":");
-    return [item.slice(0, i).trim(), item.slice(i + 1).trim()];
-  });
-}
-
-function formatFlowMap(pairs) {
-  return "{" + pairs.map(([k, v]) => `${k}: ${v}`).join(", ") + "}";
-}
-
-// The resolutions of pnpm-lock.yaml that pnpm fetches without the registry:
-// tarballs by URL (git-hosted ones included) and git repositories.
-function outsideResolutions(lockText) {
-  const found = [];
-  for (const line of lockText.split("\n")) {
-    const m = line.match(/^(\s+resolution:\s)\{(.*)\}\s*$/);
-    if (!m) continue;
-    const map = Object.fromEntries(parseFlowMap(m[2]));
-    if (map.tarball && /^https?:\/\//.test(map.tarball)) {
-      found.push({ line, prefix: m[1], map, kind: "url", path: pathOfUrl(map.tarball) });
-    } else if (map.type === "git" && map.commit && map.repo) {
-      found.push({ line, prefix: m[1], map, kind: "git", path: pathOfGit(map.repo, map.commit, map.path) });
-    }
-  }
-  return found;
-}
-
-// pnpm-lock.yaml with its outside resolutions pointed at the registry at
-// `base`. A tarball keeps its integrity. A git repository becomes the
-// tarball git-tarball.nix packs, marked `gitHosted` so that pnpm prepares it
-// as it prepares a cloned repository. pnpm requires an integrity for every
-// tarball, and `fileOf(path)` names the file the registry serves for the
-// git dependency, whose integrity the rewritten entry carries.
-function rewriteLockText(lockText, base, fileOf) {
-  const pairs = [];
-  for (const r of outsideResolutions(lockText)) {
-    const local = base + r.path;
-    let map;
-    if (r.kind === "url") {
-      map = Object.entries(r.map).map(([k, v]) => [k, k === "tarball" ? local : v]);
-    } else {
-      const file = fileOf(r.path);
-      if (file == null) fail(`the git dependency ${r.map.repo} at ${r.map.commit} is not in ${LOCK_FILE}; run \`pnpm-purifier lock\``);
-      const integrity = "sha512-" + createHash("sha512").update(fs.readFileSync(file)).digest("base64");
-      map = [
-        ["gitHosted", "true"],
-        ["integrity", integrity],
-        ["tarball", local],
-      ];
-    }
-    pairs.push([r.line, r.prefix + formatFlowMap(map)]);
-  }
-  let text = lockText;
-  for (const [from, to] of pairs) text = text.split(from).join(to);
-  return { text, pairs };
-}
-
-// The workspace projects: the importers of the project document of
-// pnpm-lock.yaml. pnpm 12 writes a document for its own version first, so
-// the project document is the last one. Each importer key is a project
-// directory relative to the lockfile, quoted when YAML needs it, and an
-// importer without dependencies is an empty mapping (`.: {}`).
-function lockImporters(lockText) {
-  const start = lockText.lastIndexOf("\nimporters:\n");
-  if (start < 0) return ["."];
-  const dirs = [];
-  for (const line of lockText.slice(start + "\nimporters:\n".length).split("\n")) {
-    if (line !== "" && !line.startsWith(" ")) break;
-    const m = line.match(/^ {2}(\S.*?):(?: \{\})?$/);
-    if (m) dirs.push(m[1].replace(/^(['"])(.*)\1$/, "$2"));
-  }
-  return dirs;
-}
-
+// Rewrites the pnpm-lock.yaml of `dir` to name the registry at `base` (see
+// rewriteLockText). `fileOf(path)` names the file the registry serves for a
+// git dependency.
 function rewriteLockFile(dir, base, fileOf) {
   const file = path.join(dir, "pnpm-lock.yaml");
-  const original = fs.readFileSync(file, "utf8");
-  const { text, pairs } = rewriteLockText(original, base, fileOf);
-  if (pairs.length > 0) fs.writeFileSync(file, text);
-  return { file, pairs };
+  const integrityOf = (p) => {
+    const served = fileOf(p);
+    return served == null ? null : "sha512-" + createHash("sha512").update(fs.readFileSync(served)).digest("base64");
+  };
+  let rewritten;
+  try {
+    rewritten = rewriteLockText(fs.readFileSync(file, "utf8"), base, integrityOf);
+  } catch (err) {
+    fail(err.message);
+  }
+  if (rewritten.pairs.length > 0) fs.writeFileSync(file, rewritten.text);
+  return { file, pairs: rewritten.pairs };
 }
 
-// Puts the original resolutions back, also into a pnpm-lock.yaml that pnpm
-// rewrote meanwhile.
 function restoreLockFile({ file, pairs }) {
   if (pairs.length === 0 || !fs.existsSync(file)) return;
-  let text = fs.readFileSync(file, "utf8");
-  for (const [from, to] of pairs) text = text.split(to).join(from);
-  fs.writeFileSync(file, text);
+  fs.writeFileSync(file, restoreLockText(fs.readFileSync(file, "utf8"), pairs));
 }
 
 // --- Registry configuration -------------------------------------------------
-
-// The .npmrc lines that point each upstream registry of the lock at its
-// local mirror, and keep pnpm on the version that runs: a `packageManager`
-// field naming another version otherwise makes pnpm download that one.
-function registryLines(base, registries) {
-  const lines = [`registry=${localRegistry(base, registries.default)}`];
-  for (const [scope, url] of Object.entries(registries.scopes ?? {})) {
-    lines.push(`${scope}:registry=${localRegistry(base, url)}`);
-  }
-  lines.push("manage-package-manager-versions=false", "pm-on-fail=ignore", "update-notifier=false");
-  return lines.join("\n") + "\n";
-}
 
 // The environment that configures pnpm for the local registry. pnpm reads
 // scoped registries from .npmrc files only, so the registries go into a
@@ -248,79 +156,10 @@ function pinProjectRegistries(projectDir, base, registries) {
 
 // --- The local registry -----------------------------------------------------
 
-// The package.json of an npm package tarball (a gzipped tar archive with
-// the package under one top-level directory), or null.
-function tarballManifest(buffer) {
-  let tar;
-  try {
-    tar = zlib.gunzipSync(buffer);
-  } catch {
-    return null;
-  }
-  for (let offset = 0; offset + 512 <= tar.length; ) {
-    const header = tar.subarray(offset, offset + 512);
-    if (header.every((b) => b === 0)) break;
-    const field = (start, length) => header.subarray(start, start + length).toString("utf8").replace(/\0.*$/s, "");
-    const name = field(345, 155) ? `${field(345, 155)}/${field(0, 100)}` : field(0, 100);
-    const size = parseInt(field(124, 12).trim() || "0", 8);
-    const body = offset + 512;
-    if (/^[^/]+\/package\.json$/.test(name)) {
-      try {
-        return JSON.parse(tar.subarray(body, body + size).toString("utf8"));
-      } catch {
-        return null;
-      }
-    }
-    offset = body + Math.ceil(size / 512) * 512;
-  }
-  return null;
-}
-
-// npm's platform filters of a package: the `os`, `cpu` and `libc` lists of
-// its package.json, each kept only where the package sets it.
-function platformFilters(buffer) {
-  const manifest = tarballManifest(buffer) ?? {};
-  const filters = {};
-  for (const key of ["os", "cpu", "libc"]) {
-    const value = manifest[key];
-    if (Array.isArray(value) && value.length > 0) filters[key] = value;
-    else if (typeof value === "string") filters[key] = [value];
-  }
-  return filters;
-}
-
-// Registry metadata (packuments) changes whenever a package publishes, so
-// it cannot be locked by hash. A frozen install reads tarballs only.
-function isMetadata(contentType) {
-  return /json/.test(contentType ?? "");
-}
-
-// A packument cut down to the versions whose tarballs the lock run
-// recorded. pnpm reads registry metadata only to resolve a dependency that
-// pnpm-lock.yaml does not list, such as a devDependency of a git
-// dependency it prepares. With only the recorded versions left, resolution
-// offline picks the versions it picked online. Returns null when none of
-// the packument's versions was recorded.
-function trimPackument(body, recordedPaths) {
-  let doc;
-  try {
-    doc = JSON.parse(body.toString("utf8"));
-  } catch {
-    return null;
-  }
-  const versions = {};
-  for (const [version, manifest] of Object.entries(doc.versions ?? {})) {
-    const tarball = manifest?.dist?.tarball;
-    if (tarball && recordedPaths.has(pathOfUrl(tarball))) versions[version] = manifest;
-  }
-  if (Object.keys(versions).length === 0) return null;
-  const pick = (object) => Object.fromEntries(Object.entries(object ?? {}).filter(([, v]) => versions[v] != null));
-  const trimmed = { name: doc.name, "dist-tags": pick(doc["dist-tags"]), versions };
-  if (doc.modified) trimmed.modified = doc.modified;
-  if (doc.time) {
-    trimmed.time = Object.fromEntries(Object.entries(doc.time).filter(([k]) => versions[k] != null || k === "created" || k === "modified"));
-  }
-  return JSON.stringify(trimmed);
+// A path that names registry metadata rather than a file: neither a git
+// dependency nor a tarball.
+function isMetadataPath(relPath) {
+  return !relPath.startsWith("git/") && !relPath.includes("/-/") && !relPath.endsWith(".tgz");
 }
 
 // Starts the local registry. `lookup(relPath)` returns a file path or a
@@ -328,19 +167,10 @@ function trimPackument(body, recordedPaths) {
 // the paths that `lookup` does not know, by fetching them upstream with the
 // Accept header pnpm sent. Inline metadata is served as JSON: a Buffer
 // whose path is in `inlinePaths`, or a file whose name ends in .json, which
-// is how dependencies.nix names an inline entry.
-function startRegistry({ lookup, record = null, misses = new Set(), inlinePaths = new Set() }) {
+// is how dependencies.nix names an inline entry. Each path it cannot serve
+// goes into `misses`, and with `quiet` it reports none of them itself.
+function startRegistry({ lookup, record = null, misses = new Set(), inlinePaths = new Set(), quiet = false }) {
   let base = null;
-  // Registry metadata names each version's tarball by its upstream URL,
-  // and npm downloads from that URL, so served metadata names the same
-  // tarball on this registry.
-  const localizeMetadata = (data) => {
-    const doc = JSON.parse(data.toString("utf8"));
-    for (const manifest of Object.values(doc.versions ?? {})) {
-      if (manifest?.dist?.tarball) manifest.dist.tarball = base + pathOfUrl(manifest.dist.tarball);
-    }
-    return Buffer.from(JSON.stringify(doc));
-  };
   const server = http.createServer(async (req, res) => {
     const relPath = decodeURIComponent(req.url.split("?")[0]).replace(/^\/+/, "");
     try {
@@ -354,7 +184,7 @@ function startRegistry({ lookup, record = null, misses = new Set(), inlinePaths 
         let served = body;
         if (status === 200 && isMetadata(contentType)) {
           try {
-            served = localizeMetadata(body);
+            served = Buffer.from(localizeMetadata(body.toString("utf8"), base));
           } catch {
             served = body;
           }
@@ -364,16 +194,22 @@ function startRegistry({ lookup, record = null, misses = new Set(), inlinePaths 
         return;
       }
       if (found == null) {
-        const url = urlOfPath(relPath) ?? relPath;
-        misses.add(url);
-        console.error(`pnpm-purifier: ${url} is not in ${LOCK_FILE}; run \`pnpm-purifier lock\``);
+        misses.add(relPath);
+        if (!quiet) {
+          const url = urlOfPath(relPath) ?? relPath;
+          console.error(
+            isMetadataPath(relPath)
+              ? `pnpm-purifier: pnpm asked for the registry metadata of ${url}, which ${LOCK_FILE} does not hold`
+              : `pnpm-purifier: ${url} is not in ${LOCK_FILE}; run \`pnpm-purifier lock\``,
+          );
+        }
         res.writeHead(404, { "content-type": "application/json" });
-        res.end(JSON.stringify({ error: `not locked: ${url}` }));
+        res.end(JSON.stringify({ error: `not locked: ${relPath}` }));
         return;
       }
       const json = Buffer.isBuffer(found) ? inlinePaths.has(relPath) : found.endsWith(".json");
       if (json) {
-        const body = localizeMetadata(Buffer.isBuffer(found) ? found : fs.readFileSync(found));
+        const body = Buffer.from(localizeMetadata((Buffer.isBuffer(found) ? found : fs.readFileSync(found)).toString("utf8"), base));
         res.writeHead(200, { "content-type": "application/json", "content-length": body.length });
         res.end(req.method === "HEAD" ? undefined : body);
         return;
@@ -436,10 +272,16 @@ function nixpkgsExpr() {
   return p ? `(import ${JSON.stringify(p)} { })` : `(import <nixpkgs> { })`;
 }
 
-function nixBuild(expr, extraArgs = []) {
-  return capture("nix", ["build", "--impure", "--print-out-paths", ...extraArgs, "--expr", expr], {
+// Runs `nix build` and returns the output path; `hint`, when given, follows
+// Nix's own error.
+function nixBuild(expr, extraArgs = [], hint = null) {
+  const r = spawnSync("nix", ["build", "--impure", "--print-out-paths", ...extraArgs, "--expr", expr], {
+    encoding: "utf8",
     stdio: ["ignore", "pipe", "inherit"],
-  }).trim();
+  });
+  if (r.error) fail(`cannot run nix: ${r.error.message}`);
+  if (r.status !== 0) fail(`the Nix build failed (exit ${r.status})${hint ? `. ${hint}` : ""}`);
+  return r.stdout.trim();
 }
 
 // Environment variables that keep pnpm's state inside `dir`, as in the Nix
@@ -475,33 +317,14 @@ function projectRegistries(root) {
   return { default: listed.registry ?? "https://registry.npmjs.org/", scopes };
 }
 
-// The registry credentials of the user config and the project .npmrc, as
-// pnpm reads them: `//host/path/:_authToken=TOKEN` (a bearer token) and
-// `//host/path/:_auth=BASE64` (basic authentication), with ${VAR} taken
-// from the environment. The recorder sends a request upstream with the
-// credential of the longest prefix that matches its URL.
-function registryCredentials(root) {
+// The credentials of the user config and the project .npmrc, which the
+// recorder sends upstream.
+function projectCredentials(root) {
   const files = [process.env.npm_config_userconfig ?? path.join(os.homedir(), ".npmrc"), path.join(root, ".npmrc")];
-  const credentials = [];
-  for (const file of files) {
-    if (!fs.existsSync(file)) continue;
-    for (const line of fs.readFileSync(file, "utf8").split("\n")) {
-      const m = line.match(/^\s*\/\/(.+):(_authToken|_auth)\s*=\s*(.+?)\s*$/);
-      if (!m) continue;
-      const value = m[3].replace(/^(['"])(.*)\1$/, "$2").replace(/\$\{([^}]+)\}/g, (_, v) => process.env[v] ?? "");
-      credentials.push({
-        prefix: "//" + m[1],
-        header: m[2] === "_authToken" ? `Bearer ${value}` : `Basic ${value}`,
-      });
-    }
-  }
-  return (url) => {
-    const target = url.replace(/^https?:/, "");
-    const match = credentials
-      .filter((c) => target.startsWith(c.prefix.endsWith("/") ? c.prefix : c.prefix + "/"))
-      .sort((a, b) => b.prefix.length - a.prefix.length)[0];
-    return match ? { authorization: match.header } : {};
-  };
+  return registryCredentials(
+    files.filter((f) => fs.existsSync(f)).map((f) => fs.readFileSync(f, "utf8")),
+    process.env,
+  );
 }
 
 function copyProject(root, dest) {
@@ -558,8 +381,8 @@ async function installFrom(project, work, registries, server, gitFiles, extraEnv
   return { code, env, rewrite };
 }
 
-async function lock() {
-  const root = process.cwd();
+async function lock(root = process.cwd()) {
+  const started = Date.now();
   const lockYaml = path.join(root, "pnpm-lock.yaml");
   if (!fs.existsSync(lockYaml)) {
     fail(`${root} has no pnpm-lock.yaml; run \`pnpm install\` first, which writes it`);
@@ -588,7 +411,7 @@ async function lock() {
   const recorded = new Map();
   const files = new Map();
   const metadata = new Map();
-  const credentialsFor = registryCredentials(root);
+  const credentialsFor = projectCredentials(root);
   const recorder = await startRegistry({
     lookup: (p) => gitFiles.get(p) ?? null,
     record: async (relPath, accept) => {
@@ -610,11 +433,10 @@ async function lock() {
   });
   console.error(`pnpm-purifier: installing from pnpm-lock.yaml with pnpm ${pnpmVersion}, recording every download`);
   const first = await installFrom(project, recordDir, registries, recorder, gitFiles, {});
+  recorder.server.close();
   if (first.code !== 0) {
-    recorder.server.close();
     fail(`pnpm install failed in the lock run (exit ${first.code}); the lock run's copy of the project is at ${project}`);
   }
-  recorder.server.close();
 
   // Pass 2 installs a fresh copy from what pass 1 recorded alone, as the
   // Nix build does, which shows that the lock holds every download. pnpm
@@ -632,25 +454,26 @@ async function lock() {
       lookup: (p) => files.get(p) ?? gitFiles.get(p) ?? inline.get(p) ?? null,
       misses,
       inlinePaths: new Set(inline.keys()),
+      quiet: true,
     });
     console.error("pnpm-purifier: installing again from the recorded downloads alone");
     const second = await installFrom(verifyProject, verifyDir, registries, verifier, gitFiles, OFFLINE_ENV);
     verifier.server.close();
     if (second.code === 0) break;
     const added = [];
-    for (const url of misses) {
-      const relPath = pathOfUrl(url);
+    for (const relPath of misses) {
       const body = metadata.get(relPath);
       const trimmed = body && !inline.has(relPath) ? trimPackument(body, new Set(files.keys())) : null;
       if (trimmed != null) {
         inline.set(relPath, Buffer.from(trimmed));
-        added.push(url);
+        added.push(urlOfPath(relPath) ?? relPath);
       }
     }
     if (added.length === 0) {
+      const missing = [...misses].map((p) => urlOfPath(p) ?? p);
       fail(
         `the install from the recorded downloads failed (exit ${second.code})` +
-          (misses.size > 0 ? `; pnpm requested files that the lock run could not lock:\n  ${[...misses].join("\n  ")}` : "") +
+          (missing.length > 0 ? `; pnpm requested files that the lock run could not lock:\n  ${missing.join("\n  ")}` : "") +
           `\nThe lock run's copies of the project are in ${work}`,
       );
     }
@@ -685,7 +508,8 @@ async function lock() {
   };
   fs.writeFileSync(path.join(root, LOCK_FILE), JSON.stringify(lockfile, null, 2) + "\n");
   fs.rmSync(work, { recursive: true, force: true });
-  console.error(`pnpm-purifier: wrote ${LOCK_FILE} with ${lockfile.artifacts.length} files and ${projects.length} projects`);
+  const seconds = Math.round((Date.now() - started) / 1000);
+  console.error(`pnpm-purifier: wrote ${LOCK_FILE} with ${lockfile.artifacts.length} files and ${projects.length} projects in ${seconds} s`);
 }
 
 // --- Offline modes ----------------------------------------------------------
@@ -695,11 +519,13 @@ async function lock() {
 // `projectDir`, the registry lines also go into the .npmrc of that
 // directory, which must be a copy the purifier owns. The pnpm-lock.yaml of
 // `projectDir`, or of `inPlace`, is rewritten for the length of the
-// command. Both files are put back afterwards.
+// command. Both files are put back afterwards. The result is the exit code
+// and the paths the registry could not serve.
 async function execWithManifest(manifestFile, lockFile, command, { projectDir = null, inPlace = null } = {}) {
   const manifest = JSON.parse(fs.readFileSync(manifestFile, "utf8"));
   const lockfile = JSON.parse(fs.readFileSync(lockFile, "utf8"));
-  const { server, base } = await startRegistry({ lookup: (p) => manifest[p] ?? null });
+  const misses = new Set();
+  const { server, base } = await startRegistry({ lookup: (p) => manifest[p] ?? null, misses });
   const configDir = fs.mkdtempSync(path.join(os.tmpdir(), "pnpm-purifier-"));
   const fileOf = (p) => manifest[p] ?? null;
   const unpin = projectDir != null ? pinProjectRegistries(projectDir, base, lockfile.registries) : () => {};
@@ -720,7 +546,8 @@ async function execWithManifest(manifestFile, lockFile, command, { projectDir = 
     ...OFFLINE_ENV,
   };
   try {
-    return await run(command[0], command.slice(1), { env });
+    const code = await run(command[0], command.slice(1), { env });
+    return { code, misses };
   } finally {
     restore();
     server.close();
@@ -728,17 +555,24 @@ async function execWithManifest(manifestFile, lockFile, command, { projectDir = 
   }
 }
 
+// The lockfile of `root`, when it is current, or null, after saying why
+// pnpm runs online. A malformed lockfile stops the program.
 function readLock(root) {
   const file = path.join(root, LOCK_FILE);
   if (!fs.existsSync(file)) return null;
-  const lockfile = JSON.parse(fs.readFileSync(file, "utf8"));
-  if (lockfile.version !== LOCK_VERSION) {
-    console.error(`pnpm-purifier: ${LOCK_FILE} has format ${lockfile.version}, and this version reads ${LOCK_VERSION}; run \`pnpm-purifier lock\``);
-    return null;
+  let lockfile;
+  try {
+    lockfile = JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch (err) {
+    fail(`${LOCK_FILE} is not valid JSON (${err.message}); run \`pnpm-purifier lock\` to write it again`);
+  }
+  const problems = lockProblems(lockfile);
+  if (problems.length > 0) {
+    fail(`${LOCK_FILE} is not a lockfile this version reads: ${problems.slice(0, 5).join("; ")}; run \`pnpm-purifier lock\` to write it again`);
   }
   const yaml = path.join(root, "pnpm-lock.yaml");
   if (!fs.existsSync(yaml) || hexDigest(fs.readFileSync(yaml)) !== lockfile.pnpmLockHash) {
-    console.error(`pnpm-purifier: pnpm-lock.yaml changed since ${LOCK_FILE} was written; pnpm runs online until \`pnpm-purifier lock\``);
+    console.error(`pnpm-purifier: pnpm-lock.yaml changed since ${LOCK_FILE} was written, so pnpm runs online; run \`pnpm-purifier lock\` to lock it again`);
     return null;
   }
   return file;
@@ -752,18 +586,47 @@ function realize(root, lockFile) {
   const expr =
     `${nixpkgsExpr()}.callPackage ${JSON.stringify(path.join(libDir, "dependencies.nix"))} ` +
     `{ lockFile = ${JSON.stringify(lockFile)}; }`;
-  return nixBuild(expr, ["--out-link", path.join(stateDir, "manifest")]);
+  return nixBuild(
+    expr,
+    ["--out-link", path.join(stateDir, "manifest")],
+    `Nix could not fetch the files ${LOCK_FILE} names. A hash mismatch means the file was edited or a download changed; run \`pnpm-purifier lock\` to write it again`,
+  );
+}
+
+// Runs pnpm with the network, and locks again when the command changed
+// pnpm-lock.yaml.
+async function online(root, args) {
+  const yaml = path.join(root, "pnpm-lock.yaml");
+  const before = fs.existsSync(yaml) ? hexDigest(fs.readFileSync(yaml)) : null;
+  const code = await run(pnpmCommand(root), args, {});
+  const after = fs.existsSync(yaml) ? hexDigest(fs.readFileSync(yaml)) : null;
+  if (code === 0 && after != null && after !== before && process.env.PNPM_PURIFIER !== "0") {
+    console.error(`pnpm-purifier: pnpm-lock.yaml changed, so ${LOCK_FILE} is written again`);
+    await lock(root);
+  }
+  return code;
 }
 
 async function interactive(args) {
   const root = process.cwd();
-  const pnpm = pnpmCommand(root);
-  const lockFile = process.env.PNPM_PURIFIER === "0" ? null : readLock(root);
-  if (lockFile == null) {
-    process.exit(await run(pnpm, args, {}));
+  if (args[0] === "--online") process.exit(await online(root, args.slice(1)));
+  if (isResolving(args)) {
+    console.error(`pnpm-purifier: \`pnpm ${args.join(" ")}\` resolves versions from registry metadata, so it runs online`);
+    process.exit(await online(root, args));
   }
+  if (!needsRegistry(args)) process.exit(await run(pnpmCommand(root), args, {}));
+  const lockFile = process.env.PNPM_PURIFIER === "0" ? null : readLock(root);
+  if (lockFile == null) process.exit(await run(pnpmCommand(root), args, {}));
   const manifest = realize(root, lockFile);
-  process.exit(await execWithManifest(manifest, lockFile, [pnpm, ...args], { inPlace: root }));
+  const { code, misses } = await execWithManifest(manifest, lockFile, [pnpmCommand(root), ...args], { inPlace: root });
+  if (code !== 0 && [...misses].some(isMetadataPath)) {
+    console.error(
+      "pnpm-purifier: pnpm asked for registry metadata, which it reads only to resolve versions, " +
+        "for example after package.json changed. Run the command with the network: " +
+        `\`pnpm-purifier --online ${args.join(" ")}\`, which also locks again.`,
+    );
+  }
+  process.exit(code);
 }
 
 // --- Publishing -------------------------------------------------------------
@@ -826,14 +689,15 @@ function proxyRestart() {
 }
 
 const [command, ...rest] = process.argv.slice(2);
-if (command === "lock") {
-  proxyRestart();
-  await lock();
-} else if (command === "publish") {
-  await publish(rest[0], rest.slice(1));
-} else if (command === "exec") {
+if (command === "exec") {
   const { manifest, lockFile, projectDir, command: cmd } = parseExec(rest);
-  process.exit(await execWithManifest(manifest, lockFile, cmd, { projectDir }));
-} else {
-  await interactive(process.argv.slice(2));
+  const { code, misses } = await execWithManifest(manifest, lockFile, cmd, { projectDir });
+  if (code !== 0 && misses.size > 0) {
+    console.error(`pnpm-purifier: the build requested files that ${LOCK_FILE} does not hold; run \`pnpm-purifier lock\``);
+  }
+  process.exit(code);
 }
+proxyRestart();
+if (command === "lock") await lock();
+else if (command === "publish") await publish(rest[0], rest.slice(1));
+else await interactive(process.argv.slice(2));

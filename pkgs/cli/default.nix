@@ -40,8 +40,8 @@ runCommand "pnpm-purifier"
   }
   ''
     share="$out/share/pnpm-purifier"
-    mkdir -p "$share/src" "$share/nix"
-    cp ${../../src/pnpm-purifier.mjs} "$share/src/pnpm-purifier.mjs"
+    mkdir -p "$share/nix"
+    cp -r ${../../src} "$share/src"
     cp -r ${../../nix/lib} "$share/nix/lib"
     makeWrapper ${lib.getExe nodejs} "$out/bin/pnpm-purifier" \
       --add-flags "$share/src/pnpm-purifier.mjs" \

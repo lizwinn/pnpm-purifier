@@ -169,6 +169,50 @@ in
       touch $out
     '';
 
+  # The unit tests of src/lib.mjs (tests/unit/), which read the fixture
+  # lockfiles.
+  unit = pkgs.runCommand "unit" { nativeBuildInputs = [ pkgs.nodejs ]; } ''
+    mkdir -p repo/tests
+    cp -r ${../src} repo/src
+    cp -r ${./unit} repo/tests/unit
+    cp -r ${./fixtures} repo/tests/fixtures
+    node --test repo/tests/unit/lib.test.mjs
+    touch $out
+  '';
+
+  # A lock without the tarball of ms, which the app depends on. The build
+  # fails, and its log names the missing file and the command that fixes it.
+  missing-entry =
+    let
+      failure =
+        pkgs.testers.testBuildFailure
+          (buildPnpmProject {
+            src = ./fixtures/workspace;
+            lockFile = ./fixtures/negative/missing-entry.lock.json;
+          }).packages."@example/app";
+    in
+    pkgs.runCommand "missing-entry" { } ''
+      grep -F 'https://registry.npmjs.org/ms/-/ms-2.1.3.tgz is not in pnpm-purifier.lock.json; run `pnpm-purifier lock`' ${failure}/testBuildFailure.log
+      touch $out
+    '';
+
+  # A lock whose entry for ms names another package's file. Nix fetches that
+  # file, its hash being right for it, and pnpm refuses it, because it does
+  # not match the integrity pnpm-lock.yaml records for ms.
+  tampered =
+    let
+      failure =
+        pkgs.testers.testBuildFailure
+          (buildPnpmProject {
+            src = ./fixtures/workspace;
+            lockFile = ./fixtures/negative/tampered.lock.json;
+          }).packages."@example/app";
+    in
+    pkgs.runCommand "tampered" { } ''
+      grep -i 'integrity' ${failure}/testBuildFailure.log
+      touch $out
+    '';
+
   # Evaluation fails for a lock that does not match pnpm-lock.yaml (here the
   # lock of the other fixture), and for a lock of another format version.
   lock-checks =
@@ -181,6 +225,12 @@ in
       (buildPnpmProject {
         src = ./fixtures/workspace;
         lockFile = ./fixtures/other-version.lock.json;
+      }).packages."@example/app".drvPath;
+    # An artifact with neither mirrors nor a hash, as a hand edit leaves it.
+    assert fails
+      (buildPnpmProject {
+        src = ./fixtures/workspace;
+        lockFile = ./fixtures/negative/malformed.lock.json;
       }).packages."@example/app".drvPath;
     pkgs.runCommand "lock-checks" { } "touch $out";
 }

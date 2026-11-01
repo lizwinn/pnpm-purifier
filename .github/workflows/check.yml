@@ -1,12 +1,13 @@
 # SPDX-License-Identifier: MIT
 #
-# Runs the flake's checks on pushes to main and on pull requests. The
-# checks build both test fixtures in the Nix sandbox from their lockfiles
-# (fixed-output fetches from the npm registry, codeload.github.com,
-# registry.yarnpkg.com and salsa.debian.org), run what they build, and
-# publish a fixture's tarball to a registry on the loopback interface.
-# The second step evaluates every check for every system the flake
-# lists, without building.
+# Runs the flake's checks on pushes to main and on pull requests, on
+# x86_64-linux and aarch64-linux runners. The checks build the test
+# fixtures in the Nix sandbox from their lockfiles (fixed-output fetches
+# from the npm registry, codeload.github.com, registry.yarnpkg.com and
+# salsa.debian.org), run what they build, publish a fixture's tarball to a
+# registry on the loopback interface, and run the unit and negative tests.
+# The relock step runs the lock run on a copy of each fixture and fails
+# when the lockfile it writes differs from the committed one by a byte.
 name: check
 
 on:
@@ -19,7 +20,11 @@ permissions:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
@@ -27,3 +32,12 @@ jobs:
         run: nix flake check -L
       - name: Evaluate the checks for every system
         run: nix flake check --all-systems --no-build
+      - name: Relock each fixture and compare
+        run: |
+          set -euo pipefail
+          for fixture in workspace sources prepare; do
+            work=$(mktemp -d)
+            cp -r "tests/fixtures/$fixture" "$work/project"
+            (cd "$work/project" && nix run "$GITHUB_WORKSPACE" -- lock)
+            diff -u "tests/fixtures/$fixture/pnpm-purifier.lock.json" "$work/project/pnpm-purifier.lock.json"
+          done
