@@ -1,0 +1,2 @@
+allowBuilds:
+  "prepare-dep@https://codeload.github.com/nix-purifiers/pnpm-purifier/tar.gz/d62e9071c4272b7e4968293743fb297f02cba3c0#path:/tests/fixtures/prepare-dep": true

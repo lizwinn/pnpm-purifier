@@ -65,6 +65,22 @@ in
       touch $out
     '';
 
+  # A git dependency in a directory of its repository, whose prepare script
+  # needs a devDependency (tests/fixtures/prepare, which installs
+  # tests/fixtures/prepare-dep from this repository's history). pnpm
+  # prepares it with npm, which resolves the devDependency from registry
+  # metadata; the lock holds that metadata as an inline entry.
+  prepare =
+    let
+      project = (buildPnpmProject { src = ./fixtures/prepare; }).packages.prepare;
+    in
+    pkgs.runCommand "prepare" { } ''
+      out_text=$(${project.artifacts.bin.prepare-check})
+      echo "$out_text"
+      grep -Fx 'prepared, picocolors function' <<<"$out_text"
+      touch $out
+    '';
+
   # `pnpm-purifier publish` publishes the tarball output of a project with
   # `pnpm publish`. The check publishes greet's tarball to a registry on
   # the loopback interface (tests/fake-registry.mjs) and compares what the

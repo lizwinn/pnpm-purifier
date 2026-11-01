@@ -1,0 +1,12 @@
+{
+  "name": "prepare",
+  "version": "1.0.0",
+  "private": true,
+  "packageManager": "pnpm@12.9.0",
+  "bin": {
+    "prepare-check": "check.js"
+  },
+  "dependencies": {
+    "prepare-dep": "github:nix-purifiers/pnpm-purifier#d62e9071c4272b7e4968293743fb297f02cba3c0&path:/tests/fixtures/prepare-dep"
+  }
+}
