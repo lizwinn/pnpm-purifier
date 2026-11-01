@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-{ ... }:
+{ closure-lib, ... }:
 {
   config,
   inputs,
@@ -8,34 +8,30 @@
 }:
 {
 
-  imports = [ inputs.flake-parts.flakeModules.partitions ];
+  imports = [
+    inputs.flake-parts.flakeModules.partitions
+    closure-lib.caisson.modules.flake."purifier/purifier-packages"
+  ];
 
   debug = false;
-  caisson = {
-    libOverlays.exported = libOverlays: {
-      inherit (libOverlays) default;
-    };
 
-    # The scope is the `default` entry of this flake's package overlay
-    # registry (pkg-overlays/): the package set applies it by default, and
-    # the flake exports it as `pkgOverlays` and as the plain
-    # `overlays.default`. The scope holds the builder, a function, so the
-    # flake publishes the derivations of the scope below in place of the
-    # whole scope.
-    nixpkgs = {
-      packages.export.enabled = false;
-    };
+  # The flake publishes the derivations of its scope, `pkgs.pnpm-purifier`,
+  # as its packages. The scope is the `default` entry of this flake's
+  # package overlay registry (pkg-overlays/): the package set applies it by
+  # default, and the flake exports it as `pkgOverlays` and as the plain
+  # `overlays.default`.
+  purifier.scope = "pnpm-purifier";
+
+  caisson.libOverlays.exported = libOverlays: {
+    inherit (libOverlays) default;
   };
 
-  # The packages are the derivations of the scope, and `nix run
-  # github:nix-purifiers/pnpm-purifier -- lock` runs the lock run in the
-  # current directory.
+  # `nix run github:nix-purifiers/pnpm-purifier -- lock` runs the lock run in
+  # the current directory.
   perSystem =
     { pkgs, ... }:
     {
-      packages = lib.filterAttrs (_: lib.isDerivation) pkgs.pnpm-purifier // {
-        default = pkgs.pnpm-purifier.cli;
-      };
+      packages.default = pkgs.pnpm-purifier.cli;
     };
 
   partitionedAttrs.checks = "checks";
