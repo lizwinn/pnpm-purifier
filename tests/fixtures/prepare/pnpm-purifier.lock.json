@@ -1,41 +1,7 @@
 {
-  "version": 1,
-  "pnpmVersion": "12.9.0",
-  "nodeVersion": "24.21.0",
-  "registries": {
-    "default": "https://registry.npmjs.org/",
-    "scopes": {
-      "@jsr": "https://npm.jsr.io/"
-    }
-  },
+  "version": 2,
   "pnpmLockHash": "dbea83744861cade446fe0ec6e939f9004d2ef853000107a5a98ca9976bcd9ec",
-  "platforms": {
-    "os": [
-      "linux",
-      "darwin"
-    ],
-    "cpu": [
-      "x64",
-      "arm64"
-    ],
-    "libc": [
-      "glibc"
-    ]
-  },
-  "projects": [
-    {
-      "name": "prepare",
-      "path": "."
-    }
-  ],
-  "gitSubdirectories": {},
   "artifacts": [
-    {
-      "path": "https/codeload.github.com/nix-purifiers/pnpm-purifier/tar.gz/d62e9071c4272b7e4968293743fb297f02cba3c0",
-      "url": "https://codeload.github.com/nix-purifiers/pnpm-purifier/tar.gz/d62e9071c4272b7e4968293743fb297f02cba3c0",
-      "mirrors": [],
-      "hash": "sha256-EZQ2CGZZejJ2z6xvJ+bu2xM6QyQxf5AHeZt6GCoUX7I="
-    },
     {
       "path": "https/registry.npmjs.org/picocolors",
       "contents": "{\"name\":\"picocolors\",\"dist-tags\":{},\"versions\":{\"1.1.0\":{\"name\":\"picocolors\",\"version\":\"1.1.0\",\"keywords\":[\"terminal\",\"colors\",\"formatting\",\"cli\",\"console\"],\"author\":{\"name\":\"Alexey Raspopov\"},\"license\":\"ISC\",\"_id\":\"picocolors@1.1.0\",\"maintainers\":[{\"name\":\"alexeyraspopov\",\"email\":\"oleksii.raspopov@gmail.com\"}],\"homepage\":\"https://github.com/alexeyraspopov/picocolors#readme\",\"bugs\":{\"url\":\"https://github.com/alexeyraspopov/picocolors/issues\"},\"dist\":{\"shasum\":\"5358b76a78cde483ba5cef6a9dc9671440b27d59\",\"tarball\":\"https://registry.npmjs.org/picocolors/-/picocolors-1.1.0.tgz\",\"fileCount\":7,\"integrity\":\"sha512-TQ92mBOW0l3LeMeyLV6mzy/kWr8lkd/hp3mTg7wYK7zJhuBStmGMBG0BdeDZS/dZx1IukaX6Bk11zcln25o1Aw==\",\"signatures\":[{\"sig\":\"MEYCIQCGdOz7aCAxkzvKMgNtO3M+vMu+g8n6qL7uzUQj2R540AIhAMhGMaNYxFxFJDBszlKINZn1UatN7BbskLVJo1EitaE7\",\"keyid\":\"SHA256:jl3bwswu80PjjokCgh0o2w5c2U4LhQAE57gj9cz1kzA\"}],\"unpackedSize\":11429},\"main\":\"./picocolors.js\",\"types\":\"./picocolors.d.ts\",\"browser\":{\"./picocolors.js\":\"./picocolors.browser.js\"},\"gitHead\":\"6f6011182c0f16cf119019ca9bef1fadbe86b913\",\"scripts\":{\"test\":\"node tests/test.js\"},\"_npmUser\":{\"name\":\"alexeyraspopov\",\"email\":\"oleksii.raspopov@gmail.com\"},\"prettier\":{\"semi\":false,\"useTabs\":true,\"tabWidth\":2,\"printWidth\":100,\"arrowParens\":\"avoid\"},\"repository\":{\"url\":\"git+https://github.com/alexeyraspopov/picocolors.git\",\"type\":\"git\"},\"_npmVersion\":\"10.8.1\",\"description\":\"The tiniest and the fastest library for terminal output formatting with ANSI colors\",\"directories\":{},\"sideEffects\":false,\"_nodeVersion\":\"22.4.1\",\"clean-publish\":{\"cleanDocs\":true},\"_hasShrinkwrap\":false,\"devDependencies\":{\"chalk\":\"^4.1.2\",\"kleur\":\"^4.1.4\",\"prettier\":\"^2.4.1\",\"benchmark\":\"^2.1.4\",\"cli-color\":\"^2.0.0\",\"colorette\":\"^2.0.12\",\"nanocolors\":\"^0.2.12\",\"ansi-colors\":\"^4.1.1\",\"clean-publish\":\"^3.0.3\"},\"_npmOperationalInternal\":{\"tmp\":\"tmp/picocolors_1.1.0_1725320790830_0.6018633231704895\",\"host\":\"s3://npm-registry-packages\"}}},\"time\":{\"created\":\"2021-09-27T00:33:41.501Z\",\"modified\":\"2024-10-16T18:20:04.161Z\",\"1.1.0\":\"2024-09-02T23:46:31.018Z\"}}"
@@ -46,5 +12,6 @@
       "mirrors": [],
       "hash": "sha256-kcT6u/pjIolZMt17syIyIQdPKVoFWsthgjz+ONFUnCg="
     }
-  ]
+  ],
+  "contentHash": "2fb6932442a6b65faa985b5f025df33f85852c21c7381a8b62ae933a8350cd96"
 }

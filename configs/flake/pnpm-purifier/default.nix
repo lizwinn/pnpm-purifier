@@ -57,8 +57,8 @@
           {
             checks = import ../../../tests {
               inherit pkgs;
-              overlay = self.overlays.default;
               inherit (self.packages.${system}) cli;
+              inherit (lib.pnpm-purifier) buildPnpmProject readLock;
               inherit (lib) purifier;
             };
             treefmt.programs.nixfmt.enable = true;

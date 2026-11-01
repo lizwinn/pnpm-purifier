@@ -5,10 +5,11 @@
 // credentials are read, and how a lockfile is checked. They read no files
 // and start no processes, so tests/unit/ tests them directly.
 
+import { createHash } from "node:crypto";
 import zlib from "node:zlib";
 
 export const LOCK_FILE = "pnpm-purifier.lock.json";
-export const LOCK_VERSION = 1;
+export const LOCK_VERSION = 2;
 
 // The Nix systems a lock covers. pnpm installs the optional dependencies of
 // every listed platform during the lock run, so the lock holds the native
@@ -137,6 +138,87 @@ export function lockImporters(lockText) {
     if (m) dirs.push(m[1].replace(/^(['"])(.*)\1$/, "$2"));
   }
   return dirs;
+}
+
+// The packages of the project document of pnpm-lock.yaml, as
+// nix/lib/pnpm-lock.nix reads them: { key, name, version, resolution,
+// filters }, where `resolution` maps each key of the flow mapping to its
+// value and `filters` holds the `os`, `cpu` and `libc` lists that are set.
+export function lockPackages(lockText) {
+  const documents = lockText.split("\n---\n");
+  const document = documents[documents.length - 1];
+  const start = document.lastIndexOf("\npackages:\n");
+  if (start < 0) return [];
+  const packages = [];
+  let current = null;
+  for (const line of document.slice(start + "\npackages:\n".length).split("\n")) {
+    if (line !== "" && !line.startsWith(" ")) break;
+    const key = line.match(/^ {2}(\S.*?):(?: \{\})?$/);
+    if (key) {
+      const unquoted = key[1].replace(/^(['"])(.*)\1$/, "$2");
+      const nv = unquoted.match(/^(@?[^@]+)@(.*)$/);
+      current = { key: unquoted, name: nv ? nv[1] : unquoted, version: nv ? nv[2] : null, resolution: {}, filters: {} };
+      packages.push(current);
+      continue;
+    }
+    const f = line.match(/^ {4}(resolution|os|cpu|libc): (.*)$/);
+    if (!current || !f) continue;
+    if (f[1] === "resolution") {
+      const inner = f[2].match(/^\{(.*)\}$/);
+      if (inner) current.resolution = Object.fromEntries(parseFlowMap(inner[1]).map(([k, v]) => [k, v.replace(/^(['"])(.*)\1$/, "$2")]));
+    } else {
+      const inner = f[2].match(/^\[(.*)\]$/);
+      current.filters[f[1]] = inner && inner[1] !== "" ? inner[1].split(", ").map((v) => v.replace(/^(['"])(.*)\1$/, "$2")) : [];
+    }
+  }
+  return packages;
+}
+
+// The lockfile paths of the files pnpm-lock.yaml implies, as
+// nix/lib/entries.nix derives them: a registry package's tarball at its
+// registry, and a dependency given by tarball URL at that URL. Git
+// dependencies and local files are not among them.
+export function derivedFilePaths(lockText, registries) {
+  const paths = new Set();
+  for (const p of lockPackages(lockText)) {
+    const r = p.resolution;
+    if (r.directory || r.type === "git" || (r.tarball && r.tarball.startsWith("file:"))) continue;
+    if (r.tarball) {
+      paths.add(pathOfUrl(r.tarball));
+    } else if (p.version) {
+      const scope = p.name.match(/^(@[^/]+)\//);
+      const registry = (scope && registries.scopes?.[scope[1]]) || registries.default;
+      const base = p.name.replace(/^@[^/]+\//, "");
+      paths.add(pathOfUrl(`${registry}${p.name}/-/${base}-${p.version}.tgz`));
+    }
+  }
+  return paths;
+}
+
+// The registries a project's .npmrc sets, as nix/lib/registries.nix reads
+// them: `registry=URL` and `@scope:registry=URL`, over npm's default
+// registry and pnpm's default for the @jsr scope.
+export function registriesFromNpmrc(npmrcText) {
+  const withSlash = (url) => (url.endsWith("/") ? url : url + "/");
+  const registries = { default: "https://registry.npmjs.org/", scopes: { "@jsr": "https://npm.jsr.io/" } };
+  // As in an ini file, a later line wins over an earlier one.
+  for (const line of npmrcText.split("\n")) {
+    const scoped = line.match(/^[ \t]*(@[^:= \t]+):registry[ \t]*=[ \t]*([^ \t]+)[ \t]*$/);
+    const plain = line.match(/^[ \t]*registry[ \t]*=[ \t]*([^ \t]+)[ \t]*$/);
+    if (scoped) registries.scopes[scoped[1]] = withSlash(scoped[2]);
+    else if (plain) registries.default = withSlash(plain[1]);
+  }
+  return registries;
+}
+
+// Whether the registries the project's .npmrc sets cover the registries
+// pnpm resolves from: the same default, and each scope pnpm has mapped the
+// same way. When they do not, the user config sets registries, and the
+// lockfile records them.
+export function registriesCover(derived, actual) {
+  const withSlash = (url) => (url.endsWith("/") ? url : url + "/");
+  if (withSlash(derived.default) !== withSlash(actual.default)) return false;
+  return Object.entries(actual.scopes ?? {}).every(([scope, url]) => derived.scopes?.[scope] && withSlash(derived.scopes[scope]) === withSlash(url));
 }
 
 // --- Registry configuration -------------------------------------------------
@@ -317,16 +399,37 @@ export function needsRegistry(args) {
   return words.length === 0 || INSTALLING.has(words[0]);
 }
 
+// A value as JSON in the form Nix's builtins.toJSON writes: object keys in
+// sorted order and no whitespace.
+export function canonicalJSON(value) {
+  if (Array.isArray(value)) return "[" + value.map(canonicalJSON).join(",") + "]";
+  if (value !== null && typeof value === "object") {
+    return "{" + Object.keys(value).sort().map((k) => JSON.stringify(k) + ":" + canonicalJSON(value[k])).join(",") + "}";
+  }
+  return JSON.stringify(value);
+}
+
+// The hash of a lockfile's own content: the sha256, in hexadecimal, of its
+// canonical JSON without the `contentHash` field. lock.nix computes the
+// same during evaluation, so an edit to the lockfile fails there too.
+export function contentHash(lockfile) {
+  const { contentHash: _, ...rest } = lockfile;
+  return createHash("sha256").update(canonicalJSON(rest)).digest("hex");
+}
+
 // The problems of a parsed lockfile, as messages; empty when it has the
 // shape this version writes.
 export function lockProblems(lockfile) {
   if (lockfile == null || typeof lockfile !== "object" || Array.isArray(lockfile)) return ["it is not a JSON object"];
   if (lockfile.version !== LOCK_VERSION) return [`it has format ${lockfile.version}, and this version reads ${LOCK_VERSION}`];
   const problems = [];
-  for (const key of ["pnpmVersion", "pnpmLockHash"]) {
+  for (const key of ["pnpmLockHash", "contentHash"]) {
     if (typeof lockfile[key] !== "string") problems.push(`${key} is not a string`);
   }
-  if (!Array.isArray(lockfile.projects)) problems.push("projects is not a list");
+  if (lockfile.pnpmVersion != null && typeof lockfile.pnpmVersion !== "string") problems.push("pnpmVersion is not a string");
+  if (typeof lockfile.contentHash === "string" && lockfile.contentHash !== contentHash(lockfile)) {
+    problems.push("its content does not match its contentHash, so it was edited after `pnpm-purifier lock` wrote it");
+  }
   if (!Array.isArray(lockfile.artifacts)) return [...problems, "artifacts is not a list"];
   lockfile.artifacts.forEach((a, i) => {
     const where = `artifact ${i}${a?.path ? ` (${a.path})` : ""}`;

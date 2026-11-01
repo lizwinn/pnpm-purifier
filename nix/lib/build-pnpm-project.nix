@@ -1,18 +1,15 @@
-# buildPnpmProject: the sandboxed builds of a pnpm project, from the
-# lockfile `pnpm-purifier lock` writes beside pnpm-lock.yaml.
+# buildPnpmProject: the sandboxed builds of a pnpm project, from its
+# pnpm-lock.yaml and, when the project has one, the purifier lockfile
+# `pnpm-purifier lock` writes beside it.
 #
-# The file is a package for callPackage: the first argument set is what it
-# takes from the package set, and the result is the builder. The
-# pnpm-purifier overlay (`overlays.default`) adds it to the package set as
-# `buildPnpmProject`, so a package written for callPackage takes it like
-# any other dependency:
+# The flake's library has it as `lib.pnpm-purifier.buildPnpmProject`. The
+# first argument set here is what the library gives it (the purifier
+# library); the second is what a caller passes:
 #
-#   { buildPnpmProject }: (buildPnpmProject { src = ./.; }).packages."@example/app"
+#   lib.pnpm-purifier.buildPnpmProject { inherit pkgs; src = ./.; }
 #
 # The builder returns
 #
-#   dependencies       the manifest of every locked download, which the
-#                      local registry serves from
 #   packages.<name>    workspace project <name>, built and deployed with its
 #                      production dependencies under lib/node_modules/<name>,
 #                      with a wrapper in bin/ for each of its `bin` entries;
@@ -21,38 +18,40 @@
 #   packages.<name>.artifacts
 #                      the files of those outputs by name, known during
 #                      evaluation: `bin.<bin>` and `tarball`
+#   tests              the `test` script of every project, run in the
+#                      sandbox
+#   release            the tarballs of the projects that are not private,
+#                      which `pnpm-purifier publish` uploads
+#   fetches            the entries of the lock (`readLock`), for every
+#                      system the lock covers
+#   dependencies       the manifest of the entries for the host system,
+#                      which the local registry serves from
+#   lock               the lock in memory, as `readLock` gives it
+{ purifier }:
 {
-  lib,
-  stdenv,
-  callPackage,
-  makeWrapper,
-  nodejs,
-  # pnpm of each major version the lock may have been made with. The build
-  # runs the one of the lock's major version; nixpkgs builds each from
-  # source, which pnpm 12 (a native program) needs.
-  pnpm_10 ? null,
-  pnpm_11 ? null,
-  pnpm_12 ? null,
-  # The purifier library (`lib.purifier` of github:nix-purifiers/purifier),
-  # which the pnpm-purifier overlay passes.
-  purifier,
-}:
-{
+  # The package set the build uses.
+  pkgs,
   # The root of the pnpm workspace or project, which holds pnpm-lock.yaml.
   src,
-  # The lockfile; the default is the one `pnpm-purifier lock` writes.
+  # Fetchers for the purifier library's fetchEntry, by name, such as a
+  # `fetchurl` for a mirror or for credentials.
+  fetchers ? { },
+  # The purifier lockfile; the default is the one `pnpm-purifier lock`
+  # writes in the project, and a project without one builds from
+  # pnpm-lock.yaml alone. A packaging flake keeps it outside `src` for a
+  # project whose author does not.
   lockFile ? src + "/pnpm-purifier.lock.json",
-  # The pnpm that runs the build. The default is pnpm of the major version
-  # the lock was made with.
+  # pnpm's own lockfile. A file outside `src` replaces any copy in it, for a
+  # project whose source holds none.
+  pnpmLock ? src + "/pnpm-lock.yaml",
+  # The pnpm that runs the build. The default is the package set's pnpm of
+  # the major version (pnpm_10, pnpm_11 or pnpm_12) that the
+  # `packageManager` field of package.json names, or that the purifier
+  # lockfile records, which nixpkgs builds from source.
   pnpm ? null,
-  # Replaces nixpkgs' fetchurl for the locked files, such as a fetchurl
-  # that sends credentials; see dependencies.nix.
-  fetchurl ? null,
   # The package script each package build runs after installing, in the
   # project and in the workspace projects it depends on, when they have it.
   buildScript ? "build",
-  # Runs each project's `test` script in its package build.
-  doCheck ? false,
   # Packages that lifecycle and build scripts need, such as python3 and a
   # C compiler for native addons.
   nativeBuildInputs ? [ ],
@@ -62,27 +61,39 @@
   srcFilter ? null,
 }:
 let
-  lock = import ./lock.nix { inherit lockFile; };
+  inherit (pkgs)
+    lib
+    stdenv
+    makeWrapper
+    nodejs
+    linkFarm
+    ;
 
-  pnpmMajor = builtins.head (lib.splitString "." lock.pnpmVersion);
-  pnpmByMajor = lib.filterAttrs (_: p: p != null) {
-    "10" = pnpm_10;
-    "11" = pnpm_11;
-    "12" = pnpm_12;
-  };
+  # The lock in memory (read-lock.nix), which fails evaluation through the
+  # library's checkLock when the lockfiles cannot be used.
+  readLock = import ./read-lock.nix { inherit purifier; };
+  lock = purifier.checkLock (readLock {
+    inherit src lockFile pnpmLock;
+  });
+
+  pnpmVersion = lock.pnpm.version;
   pnpm' =
     if pnpm != null then
       pnpm
+    else if pnpmVersion == null then
+      pkgs.pnpm
     else
-      pnpmByMajor.${pnpmMajor}
-        or (throw "pnpm-purifier: the package set has no pnpm ${pnpmMajor} for the pnpm ${lock.pnpmVersion} the lock was made with; pass `pnpm`.");
+      let
+        major = builtins.head (lib.splitString "." pnpmVersion);
+      in
+      pkgs."pnpm_${major}"
+        or (throw "pnpm-purifier: the package set has no pnpm_${major} for the pnpm ${pnpmVersion} the project uses; pass `pnpm`.");
 
-  # The lock holds the downloads of one pnpm-lock.yaml; a build of another
-  # would fail on its first missing download.
-  pnpmLockHash = builtins.hashFile "sha256" (src + "/pnpm-lock.yaml");
-  freshLock =
-    pnpmLockHash == lock.pnpmLockHash
-    || throw "pnpm-purifier: ${toString src}/pnpm-lock.yaml changed since ${toString lockFile} was written; run `pnpm-purifier lock`.";
+  inherit (lock.pnpm) registries;
+  registriesFile = pkgs.writeText "pnpm-purifier-registries.json" (builtins.toJSON registries);
+
+  # The workspace projects by package name.
+  projects = lock.outputs;
 
   defaultSrcFilter =
     path: type:
@@ -91,6 +102,8 @@ let
     in
     !(
       (type == "directory" && (name == "node_modules" || name == ".pnpm-purifier"))
+      # The lockfiles go to the build as `lockFile` and `pnpmLock`.
+      || name == "pnpm-purifier.lock.json"
       || name == ".git"
       || name == ".idea"
       || name == ".vscode"
@@ -103,15 +116,68 @@ let
     filter = if srcFilter != null then srcFilter else defaultSrcFilter;
   };
 
-  dependencies = callPackage ./dependencies.nix (
-    { inherit lockFile purifier; } // lib.optionalAttrs (fetchurl != null) { inherit fetchurl; }
-  );
+  dependencies = pkgs.callPackage ./dependencies.nix {
+    entries = purifier.entriesFor stdenv.hostPlatform.system lock;
+    inherit purifier fetchers;
+  };
 
   # The command-line program with the module it imports.
   cli = "${../../src}/pnpm-purifier.mjs";
 
   # A derivation name from a package name: @example/app becomes example-app.
   derivationName = name: lib.replaceStrings [ "/" ] [ "-" ] (lib.removePrefix "@" name);
+
+  # The shell that installs the project from the locked files, under the
+  # local registry, which serves them and nothing else, then runs
+  # `commands` under it too. `filter` limits the install to some projects.
+  # The sandbox has no /usr/bin/env, so a script that runs by its path
+  # needs its shebang to name an interpreter in the store: the project's
+  # own scripts are patched before anything runs, and the scripts of the
+  # installed packages after the install.
+  installAndRun =
+    {
+      filter ? null,
+      commands,
+    }:
+    let
+      registry = "node ${cli} registry-exec --manifest ${dependencies} --registries ${registriesFile} --pin-project . --";
+      filterArgs = lib.optionalString (filter != null) "--filter ${lib.escapeShellArg filter}";
+    in
+    ''
+      export HOME="$TMPDIR/home"
+      export XDG_RUNTIME_DIR="$TMPDIR/run"
+      export XDG_CACHE_HOME="$HOME/.cache" XDG_CONFIG_HOME="$HOME/.config"
+      export XDG_DATA_HOME="$HOME/.local/share" XDG_STATE_HOME="$HOME/.local/state"
+      # node-gyp builds native addons against these headers rather than
+      # downloading them.
+      export npm_config_nodedir=${nodejs}
+      mkdir -p "$HOME" "$XDG_RUNTIME_DIR"
+      cp --no-preserve=mode ${pnpmLock} pnpm-lock.yaml
+      patchShebangs --build .
+      ${registry} pnpm install --frozen-lockfile --store-dir "$TMPDIR/store" ${filterArgs}
+      for modules in $(find . -name node_modules -type d -prune); do
+        patchShebangs --build "$modules"
+      done
+      ${registry} bash -euo pipefail -c ${lib.escapeShellArg commands}
+    '';
+
+  # pnpm writes state files with times and with the local registry's port
+  # into node_modules. Nothing reads them at run time, and they would make
+  # each build differ from the last. `pnpm deploy` also writes the
+  # dependency maps of the deployed package.json in no fixed order, so they
+  # are sorted.
+  removeInstallState = dir: ''
+    find ${dir} \( -name .modules.yaml -o -name '.pnpm-workspace-state*.json' -o -path '*/node_modules/.pnpm/lock.yaml' \) -delete
+    node -e '
+      const fs = require("node:fs");
+      const file = process.argv[1];
+      const manifest = JSON.parse(fs.readFileSync(file, "utf8"));
+      for (const key of ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"]) {
+        if (manifest[key]) manifest[key] = Object.fromEntries(Object.entries(manifest[key]).sort(([a], [b]) => (a < b ? -1 : 1)));
+      }
+      fs.writeFileSync(file, JSON.stringify(manifest, null, 2) + "\n");
+    ' ${dir}/package.json
+  '';
 
   mkPackage =
     project:
@@ -130,7 +196,6 @@ let
       # and with - for /, then the version.
       tarballName = "${derivationName project.name}-${manifest.version or "0"}.tgz";
       filter = lib.escapeShellArg project.name;
-      filterWithDeps = lib.escapeShellArg "${project.name}...";
       # `pnpm deploy` copies a workspace project with its production
       # dependencies, and works only for a project inside a workspace. The
       # project at the root keeps its own directory, reinstalled without
@@ -146,7 +211,6 @@ let
             pnpm --filter ${filter} deploy --prod "$TMPDIR/deploy"
           '';
     in
-    assert freshLock;
     stdenv.mkDerivation (finalAttrs: {
       pname = derivationName project.name;
       version = manifest.version or "0";
@@ -160,38 +224,19 @@ let
       ++ nativeBuildInputs;
       dontConfigure = true;
 
-      # The steps run as one command under the local registry, which serves
-      # the locked downloads and nothing else.
       buildPhase = ''
         runHook preBuild
-        export HOME="$TMPDIR/home"
-        export XDG_RUNTIME_DIR="$TMPDIR/run"
-        export XDG_CACHE_HOME="$HOME/.cache" XDG_CONFIG_HOME="$HOME/.config"
-        export XDG_DATA_HOME="$HOME/.local/share" XDG_STATE_HOME="$HOME/.local/state"
-        # node-gyp builds native addons against these headers rather than
-        # downloading them.
-        export npm_config_nodedir=${nodejs}
-        mkdir -p "$HOME" "$XDG_RUNTIME_DIR"
-        # The sandbox has no /usr/bin/env, so a script that runs by its path
-        # needs its shebang to name an interpreter in the store: the
-        # project's own scripts before anything runs, and the scripts of
-        # the installed packages after the install.
-        patchShebangs --build .
-        node ${cli} registry-exec --manifest ${dependencies} --lock ${lockFile} --pin-project . -- \
-          pnpm install --frozen-lockfile --store-dir "$TMPDIR/store" --filter ${filterWithDeps}
-        for modules in $(find . -name node_modules -type d -prune); do
-          patchShebangs --build "$modules"
-        done
-        node ${cli} registry-exec --manifest ${dependencies} --lock ${lockFile} --pin-project . -- \
-          bash -euo pipefail -c '
-            pnpm --filter ${filterWithDeps} run --if-present ${lib.escapeShellArg buildScript}
-            ${lib.optionalString doCheck "pnpm --filter ${filter} run --if-present test"}
+        ${installAndRun {
+          filter = "${project.name}...";
+          commands = ''
+            pnpm --filter ${lib.escapeShellArg "${project.name}..."} run --if-present ${lib.escapeShellArg buildScript}
             ${lib.optionalString (!isPrivate) ''
               mkdir -p "$TMPDIR/pack"
               pnpm --filter ${filter} pack --pack-destination "$TMPDIR/pack"
             ''}
             ${deploy}
-          '
+          '';
+        }}
         runHook postBuild
       '';
 
@@ -199,6 +244,7 @@ let
         runHook preInstall
         mkdir -p "$(dirname "${deployed}")"
         cp -r ${if atRoot then "." else ''"$TMPDIR/deploy"''} "${deployed}"
+        ${removeInstallState ''"${deployed}"''}
         ${lib.concatStrings (
           lib.mapAttrsToList (bin: file: ''
             makeWrapper ${lib.getExe nodejs} "$out/bin/${bin}" \
@@ -224,6 +270,7 @@ let
         }
         // lib.optionalAttrs (!isPrivate) {
           tarball = "${finalAttrs.finalPackage.tarball}/${tarballName}";
+          inherit tarballName;
         };
       };
       meta = {
@@ -231,9 +278,58 @@ let
       }
       // lib.optionalAttrs (bins != { }) { mainProgram = builtins.head (builtins.attrNames bins); };
     });
+
+  packages = builtins.mapAttrs (_: mkPackage) projects;
+
+  rootName = derivationName (
+    if builtins.pathExists (src + "/package.json") then
+      (lib.importJSON (src + "/package.json")).name or "pnpm-project"
+    else
+      "pnpm-project"
+  );
+
+  # Every project's `test` script, after every project's build script, in
+  # one install of the whole workspace.
+  tests = stdenv.mkDerivation {
+    name = "${rootName}-tests";
+    src = filteredSrc;
+    nativeBuildInputs = [
+      nodejs
+      pnpm'
+    ]
+    ++ nativeBuildInputs;
+    dontConfigure = true;
+    buildPhase = ''
+      runHook preBuild
+      ${installAndRun {
+        commands = ''
+          pnpm --recursive run --if-present ${lib.escapeShellArg buildScript}
+          pnpm --recursive run --if-present test
+        '';
+      }}
+      runHook postBuild
+    '';
+    installPhase = "touch $out";
+  };
+
+  # The tarballs of the projects that are not private, by their file names.
+  release = linkFarm "${rootName}-release" (
+    lib.mapAttrsToList (_: p: {
+      name = p.artifacts.tarballName;
+      path = p.artifacts.tarball;
+    }) (lib.filterAttrs (_: p: p.artifacts ? tarball) packages)
+  );
 in
 {
-  inherit lock dependencies;
-  packages = builtins.mapAttrs (_: mkPackage) lock.projectsByName;
+  inherit
+    lock
+    dependencies
+    registries
+    registriesFile
+    packages
+    tests
+    release
+    ;
+  fetches = lock.entries;
   pnpm = pnpm';
 }

@@ -1,14 +1,11 @@
 {
-  "version": 1,
-  "pnpmVersion": "12.9.0",
-  "pnpmLockHash": "6d185e16c4159a929505dc95d4c45fa942f5bfd6de1882a08cf48f8293ea568c",
-  "projects": [
-    { "name": "@example/app", "path": "packages/app" }
-  ],
+  "version": 2,
+  "pnpmLockHash": "d863690a74de343510d7e87e1cf3959871e65b65ca71968ed4056745437aba6c",
   "artifacts": [
     {
-      "path": "https/registry.npmjs.org/ms/-/ms-2.1.3.tgz",
-      "url": "https://registry.npmjs.org/ms/-/ms-2.1.3.tgz"
+      "path": "git/salsa.debian.org/js-team/node-ms/3171b261a43eeca83fbd2d6711c0f74e665584d1/package.tgz",
+      "url": "https://example.org/x.tgz"
     }
-  ]
+  ],
+  "contentHash": "d3f8267a599f7c5466a0963f427b16e6e8a17f2ff3b6d95ee84f1295b4823c82"
 }

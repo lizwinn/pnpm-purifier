@@ -8,7 +8,8 @@
     "built.txt"
   ],
   "scripts": {
-    "build": "./gen.js"
+    "build": "./gen.js",
+    "test": "node --test test.js"
   },
   "dependencies": {
     "picocolors": "1.1.1"

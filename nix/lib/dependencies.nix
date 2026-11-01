@@ -1,67 +1,66 @@
-# The locked downloads of a lockfile, as the manifest the local registry
-# serves from: a JSON object from each artifact's lockfile path to a file
-# in the store. The purifier library's fetchEntry fetches each entry: a
-# file entry is its download, an inline entry (registry metadata) is a
-# file with its contents, and a git entry is the checkout of its commit,
-# which git-tarball.nix packs as the tarball pnpm installs. The manifest
-# holds the artifacts whose npm platform filters admit the host system,
-# by the library's `admits`.
+# The downloads of a build, as the manifest the local registry serves from:
+# a JSON object from each entry's path to a file in the store. `entries`
+# are the entries of the lock for the host system, from `entriesFor` of the
+# purifier library. The library's fetchEntry fetches each entry: a file
+# entry is its download, an inline entry (registry metadata) is a file
+# with its contents, and a git entry is the checkout of its commit, which
+# git-tarball.nix packs as the tarball pnpm installs.
 #
-# It is a package for callPackage, with the lockfile and the purifier
+# It is a package for callPackage, with the entries and the purifier
 # library (`lib.purifier` of the flake github:nix-purifiers/purifier) among
 # its arguments. buildPnpmProject's `dependencies` is this, and the
-# interactive mode of `pnpm-purifier` builds it on its own.
+# interactive mode of `pnpm-purifier` builds it through the builder.
 {
   pkgs,
-  stdenvNoCC,
+  lib,
   callPackage,
   writeText,
   purifier,
-  lockFile,
-  # Replaces nixpkgs' fetchurl for file entries, as fetchEntry takes it:
-  # the place for credentials, such as a fetchurl with `netrcPhase`.
-  fetchurl ? pkgs.fetchurl,
+  entries,
+  # Fetchers for the library's fetchEntry, by name, such as a `fetchurl`
+  # with credentials (nixpkgs' fetchurl takes `netrcPhase`) or a mirror.
+  fetchers ? { },
 }:
 let
-  lock = import ./lock.nix { inherit lockFile; };
-  system = stdenvNoCC.hostPlatform.system;
-  fetch = purifier.fetchEntry { inherit pkgs fetchurl; };
+  fetch = purifier.fetchEntry ({ inherit pkgs; } // fetchers);
   gitTarball = callPackage ./git-tarball.nix { };
-  admitted =
-    a:
-    purifier.admits {
-      os = a.os or null;
-      cpu = a.cpu or null;
-      libc = a.libc or null;
-    } system;
-  # The fields of an entry that the library knows; the platform filters
-  # stay with the purifier.
+  # The fields of an entry that the library fetches by; the platform
+  # filters, the systems and the subdirectory stay with the purifier.
   entryOf =
-    a:
-    removeAttrs a [
+    entry:
+    removeAttrs entry [
       "os"
       "cpu"
       "libc"
+      "systems"
+      "subdirectory"
     ];
+  # A git entry's path ends in <commit>[/<directory>]/package.tgz; the name
+  # of its tarball takes the component before package.tgz.
+  tarballName =
+    path:
+    let
+      parts = lib.splitString "/" path;
+    in
+    "${lib.elemAt parts (lib.length parts - 2)}-package.tgz";
   fileOf =
-    a:
-    if a ? git then
+    entry:
+    if entry ? git then
       gitTarball {
-        name = lock.artifactName a;
-        checkout = fetch (entryOf a);
-        subdirectory = lock.gitSubdirectory a;
+        name = tarballName entry.path;
+        checkout = fetch (entryOf entry);
+        subdirectory = entry.subdirectory or null;
       }
     else
-      fetch (entryOf a);
+      fetch (entryOf entry);
 in
-(writeText "pnpm-purifier-registry.json" (
+writeText "pnpm-purifier-registry.json" (
   builtins.toJSON (
     builtins.listToAttrs (
-      map (a: {
-        name = a.path;
-        value = "${fileOf a}";
-      }) (builtins.filter admitted lock.artifacts)
+      map (e: {
+        name = e.path;
+        value = "${fileOf e}";
+      }) entries
     )
   )
-)).overrideAttrs
-  { passthru = { inherit lock; }; }
+)

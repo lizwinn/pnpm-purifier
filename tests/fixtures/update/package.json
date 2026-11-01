@@ -1,0 +1,9 @@
+{
+  "name": "update",
+  "version": "1.0.0",
+  "private": true,
+  "packageManager": "pnpm@12.9.0",
+  "dependencies": {
+    "ms": "^2.0.0"
+  }
+}

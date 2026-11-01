@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "pnpmLockHash": "d863690a74de343510d7e87e1cf3959871e65b65ca71968ed4056745437aba6c",
+  "artifacts": [
+    {
+      "path": "git/salsa.debian.org/js-team/node-ms/3171b261a43eeca83fbd2d6711c0f74e665584d1/package.tgz",
+      "git": {
+        "url": "https://salsa.debian.org/js-team/node-ms.git",
+        "rev": "3171b261a43eeca83fbd2d6711c0f74e665584d1",
+        "submodules": false,
+        "leaveDotGit": false,
+        "commitObject": null
+      },
+      "hash": "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+    }
+  ],
+  "contentHash": "e5c60ce8020999c8143f776606e18fa9f0d9e8fb7715162f57ea78f42a9d8409"
+}

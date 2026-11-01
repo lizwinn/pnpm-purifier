@@ -1,28 +1,33 @@
 # SPDX-License-Identifier: MIT
 #
 # The flake's checks. Every one builds in the sandbox; the only network
-# access is the fixed-output fetches of locked artifacts.
+# access is the fixed-output fetches of locked artifacts. The conformance
+# checks that need Nix or the network (conformance-relock,
+# conformance-update, conformance-rebuild and conformance-offline) are CI
+# jobs of the same name in .github/workflows/check.yml.
 {
   pkgs,
-  # The flake's default package overlay, which adds buildPnpmProject.
-  overlay,
   cli,
+  # `lib.pnpm-purifier.buildPnpmProject` of this flake.
+  buildPnpmProject,
+  # `lib.pnpm-purifier.readLock` of this flake.
+  readLock,
   # The purifier library, `lib.purifier`.
   purifier,
 }:
 let
   inherit (pkgs) lib;
 
-  # The fixture builds the way a consumer's package does: through
-  # buildPnpmProject of a package set the overlay applies to.
-  withOverlay = pkgs.extend overlay;
-  inherit (withOverlay) buildPnpmProject;
+  # Every fixture builds the way a consumer's project does.
+  build = args: buildPnpmProject ({ inherit pkgs; } // args);
 
   # A pnpm 12 workspace (tests/fixtures/workspace): @example/greet, a
-  # library with a registry dependency, and @example/app, a private app
-  # that depends on greet and bundles itself with esbuild, whose native
-  # binary comes from a platform-specific optional dependency.
-  workspace = buildPnpmProject { src = ./fixtures/workspace; };
+  # library with a registry dependency and a build script that runs by its
+  # path, and @example/app, a private app that depends on greet and bundles
+  # itself with esbuild, whose native binary comes from a platform-specific
+  # optional dependency. Its pnpm-lock.yaml says everything the build
+  # needs, so it has no purifier lockfile.
+  workspace = build { src = ./fixtures/workspace; };
   app = workspace.packages."@example/app";
   greet = workspace.packages."@example/greet";
 
@@ -30,9 +35,123 @@ let
   # a failed assertion.
   fails = value: !(builtins.tryEval (builtins.deepSeq value value)).success;
 
+  # The lock of the sources fixture, whose purifier lockfile holds the
+  # checkout hash of a git dependency, read with another lockfile or
+  # pnpm-lock.yaml. `problems` must name `pnpm-purifier lock`, and a build
+  # must fail during evaluation.
+  sourcesLock = args: readLock ({ src = ./fixtures/sources; } // args);
+  sourcesWith = args: (build ({ src = ./fixtures/sources; } // args)).packages.sources;
+  rejected =
+    name: args: pattern:
+    let
+      problems = (sourcesLock args).problems;
+    in
+    assert lib.assertMsg (
+      problems != [ ] && builtins.all (p: lib.hasInfix "pnpm-purifier lock" p) problems
+    ) "${name}: the problems ${builtins.toJSON problems} do not all name `pnpm-purifier lock`";
+    assert lib.assertMsg (builtins.any (
+      p: builtins.match pattern p != null
+    ) problems) "${name}: no problem in ${builtins.toJSON problems} matches ${pattern}";
+    assert fails (sourcesWith args).drvPath;
+    pkgs.runCommand name { } "touch $out";
+
+  # A fixture without its lockfiles, as a project whose author keeps no
+  # purifier lockfile and no pnpm-lock.yaml.
+  withoutLocks =
+    fixture:
+    builtins.path {
+      path = fixture;
+      name = "without-locks";
+      filter =
+        path: _:
+        !(builtins.elem (baseNameOf path) [
+          "pnpm-purifier.lock.json"
+          "pnpm-lock.yaml"
+        ]);
+    };
 in
 {
   inherit cli;
+
+  # The fixture packages themselves, which the conformance-rebuild job
+  # builds a second time with `nix build --rebuild`.
+  fixture-app = app;
+  fixture-greet = greet;
+
+  # The workspace's test scripts, run in the sandbox.
+  fixture-tests = workspace.tests;
+
+  # --- The conformance checks of the purifier contract ----------------------
+
+  # A lockfile older than the project fails during evaluation, naming
+  # `pnpm-purifier lock`: the purifier lockfile of the sources fixture was
+  # made from its own pnpm-lock.yaml, and the lock gets the pnpm-lock.yaml
+  # of the workspace fixture instead.
+  conformance-stale = rejected "conformance-stale" {
+    pnpmLock = ./fixtures/workspace/pnpm-lock.yaml;
+  } ".*changed since.*";
+
+  # A lockfile with a changed hash fails during evaluation: the hash of the
+  # git entry no longer matches the lockfile's contentHash.
+  conformance-tampered = rejected "conformance-tampered" {
+    lockFile = ./fixtures/negative/tampered-hash.lock.json;
+  } ".*does not match its contentHash.*";
+
+  # A lockfile without an entry the build needs (the checkout hash of the
+  # git dependency, with a contentHash that matches) fails during
+  # evaluation, naming the dependency and `pnpm-purifier lock`.
+  conformance-missing = rejected "conformance-missing" {
+    lockFile = ./fixtures/negative/missing-entry.lock.json;
+  } ".*git dependency https://salsa.debian.org/js-team/node-ms.git at 3171b26.*";
+
+  # A lockfile that is not valid fails during evaluation: an artifact that
+  # is none of a file, a git or an inline entry, and a lock of another
+  # format version.
+  conformance-malformed =
+    assert fails (sourcesWith { lockFile = ./fixtures/negative/malformed.lock.json; }).drvPath;
+    assert fails (sourcesWith { lockFile = ./fixtures/other-version.lock.json; }).drvPath;
+    (rejected "conformance-malformed" {
+      lockFile = ./fixtures/negative/malformed.lock.json;
+    } ".*none of a file, a git or an inline entry.*");
+
+  # A project whose source holds no lockfile builds from lockfiles kept
+  # outside it, as a packaging flake keeps them for a project its author
+  # does not change: the purifier lockfile and pnpm-lock.yaml of the
+  # sources fixture, given as `lockFile` and `pnpmLock`.
+  conformance-external =
+    let
+      project =
+        (build {
+          src = withoutLocks ./fixtures/sources;
+          lockFile = ./fixtures/sources/pnpm-purifier.lock.json;
+          pnpmLock = ./fixtures/sources/pnpm-lock.yaml;
+        }).packages.sources;
+    in
+    pkgs.runCommand "conformance-external" { } ''
+      ${project.artifacts.bin.sources} | grep -Fx 'git: 3600000'
+      touch $out
+    '';
+
+  # The lock in memory has the shape of the purifier library (checkLock
+  # accepts it), names its purifier, and has the workspace projects as its
+  # outputs.
+  lock-shape =
+    let
+      lock = readLock { src = ./fixtures/workspace; };
+    in
+    assert purifier.checkLock lock == lock;
+    assert lock.purifier == "pnpm-purifier";
+    assert
+      builtins.attrNames lock.outputs == [
+        "@example/app"
+        "@example/greet"
+        "workspace-root"
+      ];
+    assert lock.outputs."@example/greet".path == "packages/greet";
+    assert (sourcesLock { }).problems == [ ];
+    pkgs.runCommand "lock-shape" { } "touch $out";
+
+  # --- What the fixtures build ----------------------------------------------
 
   # The app runs from its deployed tree, with its workspace dependency and
   # its registry dependency resolved.
@@ -53,7 +172,7 @@ in
   # imports each one.
   sources =
     let
-      project = (buildPnpmProject { src = ./fixtures/sources; }).packages.sources;
+      project = (build { src = ./fixtures/sources; }).packages.sources;
     in
     pkgs.runCommand "sources" { } ''
       out_text=$(${project.artifacts.bin.sources})
@@ -74,7 +193,7 @@ in
   # metadata; the lock holds that metadata as an inline entry.
   prepare =
     let
-      project = (buildPnpmProject { src = ./fixtures/prepare; }).packages.prepare;
+      project = (build { src = ./fixtures/prepare; }).packages.prepare;
     in
     pkgs.runCommand "prepare" { } ''
       out_text=$(${project.artifacts.bin.prepare-check})
@@ -85,10 +204,10 @@ in
 
   # A real project, pinned: unjs/giget, a command-line tool on pnpm 11 with
   # a few hundred locked packages, at commit f1dad45. Its source is fetched
-  # during evaluation by its hash, and its lockfile is
-  # tests/real-world/giget.lock.json, which `pnpm-purifier lock` wrote in a
-  # checkout of that commit. The build runs its obuild build in the
-  # sandbox, and the check runs the command it builds.
+  # during evaluation by its hash. Its pnpm-lock.yaml says everything the
+  # build needs, so `pnpm-purifier lock` writes no purifier lockfile for it.
+  # The build runs its obuild build in the sandbox, and the check runs the
+  # command it builds.
   real-world =
     let
       src = builtins.fetchTree {
@@ -98,11 +217,7 @@ in
         rev = "f1dad453055b97a81d5227edce7262c8dcaf53d2";
         narHash = "sha256-hDKGYxozIV8UQTbPpJVs6jrDiPmcHK2EWRZ7WNfSYQ0=";
       };
-      project =
-        (buildPnpmProject {
-          inherit src;
-          lockFile = ./real-world/giget.lock.json;
-        }).packages.giget;
+      project = (build { inherit src; }).packages.giget;
     in
     pkgs.runCommand "real-world" { } ''
       ${project.artifacts.bin.giget} --help | tee help
@@ -110,10 +225,11 @@ in
       touch $out
     '';
 
-  # `pnpm-purifier publish` publishes the tarball output of a project with
-  # `pnpm publish`. The check publishes greet's tarball to a registry on
-  # the loopback interface (tests/fake-registry.mjs) and compares what the
-  # registry received with the file Nix built.
+  # The release holds the tarball of each project that is not private, which
+  # `pnpm-purifier publish` uploads with `pnpm publish`. The check publishes
+  # the release to a registry on the loopback interface
+  # (tests/fake-registry.mjs) and compares what the registry received with
+  # the file Nix built.
   publish =
     pkgs.runCommand "publish"
       {
@@ -125,11 +241,12 @@ in
       ''
         export HOME="$TMPDIR/home" XDG_RUNTIME_DIR="$TMPDIR/run"
         mkdir -p "$HOME" "$XDG_RUNTIME_DIR"
+        [ "$(ls ${workspace.release})" = example-greet-1.0.0.tgz ]
         node ${./fake-registry.mjs} "$TMPDIR/port" "$TMPDIR/published.tgz" &
         while [ ! -s "$TMPDIR/port" ]; do sleep 0.1; done
         port=$(cat "$TMPDIR/port")
         echo "//127.0.0.1:$port/:_authToken=check" > "$HOME/.npmrc"
-        tarball=${greet.artifacts.tarball}
+        tarball=${workspace.release}/example-greet-1.0.0.tgz
         pnpm publish "$tarball" --registry "http://127.0.0.1:$port/" --no-git-checks
         cmp "$tarball" "$TMPDIR/published.tgz"
         touch $out
@@ -146,8 +263,10 @@ in
   '';
 
   # A build reads the native packages of its own system only. The lock
-  # holds esbuild's binary package for each of the four platforms it
-  # covers, and the manifest of the host system holds that system's one.
+  # holds esbuild's binary package for each Linux system, with the one
+  # system it is for in `systems`, and the manifest of the host system
+  # holds that system's one. `fetches` lists the entries of every system
+  # for SBOM and license tools.
   platform-filters =
     let
       own =
@@ -156,7 +275,19 @@ in
           aarch64-linux = "linux-arm64";
         }
         .${pkgs.stdenv.hostPlatform.system};
+      esbuildFetches = builtins.filter (e: lib.hasInfix "/@esbuild/" e.path) workspace.fetches;
+      platformOf = e: builtins.elemAt (builtins.match ".*/@esbuild/([^/]+)/.*" e.path) 0;
     in
+    assert
+      builtins.listToAttrs (
+        map (e: {
+          name = platformOf e;
+          value = e.systems;
+        }) esbuildFetches
+      ) == {
+        linux-x64 = [ "x86_64-linux" ];
+        linux-arm64 = [ "aarch64-linux" ];
+      };
     pkgs.runCommand "platform-filters" { nativeBuildInputs = [ pkgs.jq ]; } ''
       jq -r 'keys[] | select(contains("/@esbuild/"))' ${workspace.dependencies} > esbuild
       cat esbuild
@@ -172,17 +303,21 @@ in
     assert builtins.attrNames app.artifacts.bin == [ "example-app" ];
     assert lib.hasSuffix "/example-greet-1.0.0.tgz" greet.artifacts.tarball;
     assert greet.artifacts.bin == { };
+    assert
+      builtins.attrNames workspace.packages == [
+        "@example/app"
+        "@example/greet"
+        "workspace-root"
+      ];
     pkgs.runCommand "artifact-names" { } "touch $out";
 
-  # A lock with an inline entry (tests/fixtures/inline.lock.json), which
-  # holds registry metadata that pnpm reads offline when it prepares a git
-  # dependency. The manifest serves the entry from a file with its contents.
+  # The purifier lockfile of the prepare fixture holds an inline entry: the
+  # registry metadata that npm reads offline when pnpm prepares the git
+  # dependency. The manifest serves the entry from a file with its
+  # contents.
   inline-entry =
     let
-      dependencies = withOverlay.callPackage ../nix/lib/dependencies.nix {
-        inherit purifier;
-        lockFile = ./fixtures/inline.lock.json;
-      };
+      inherit (build { src = ./fixtures/prepare; }) dependencies;
     in
     pkgs.runCommand "inline-entry" { nativeBuildInputs = [ pkgs.jq ]; } ''
       file=$(jq -r '."https/registry.npmjs.org/picocolors"' ${dependencies})
@@ -203,57 +338,22 @@ in
     touch $out
   '';
 
-  # A lock without the tarball of ms, which the app depends on. The build
-  # fails, and its log names the missing file and the command that fixes it.
-  missing-entry =
+  # A lock whose entry for the picocolors tarball, which the prepare step
+  # of the git dependency reads, names the file of ms, with a contentHash
+  # that matches. Nix fetches that file, its hash being right for it, and
+  # the install refuses it, because it does not match the integrity of the
+  # registry metadata.
+  integrity =
     let
       failure =
         pkgs.testers.testBuildFailure
-          (buildPnpmProject {
-            src = ./fixtures/workspace;
-            lockFile = ./fixtures/negative/missing-entry.lock.json;
-          }).packages."@example/app";
+          (build {
+            src = ./fixtures/prepare;
+            lockFile = ./fixtures/negative/swapped-file.lock.json;
+          }).packages.prepare;
     in
-    pkgs.runCommand "missing-entry" { } ''
-      grep -F 'https://registry.npmjs.org/ms/-/ms-2.1.3.tgz is not in pnpm-purifier.lock.json; run `pnpm-purifier lock`' ${failure}/testBuildFailure.log
-      touch $out
-    '';
-
-  # A lock whose entry for ms names another package's file. Nix fetches that
-  # file, its hash being right for it, and pnpm refuses it, because it does
-  # not match the integrity pnpm-lock.yaml records for ms.
-  tampered =
-    let
-      failure =
-        pkgs.testers.testBuildFailure
-          (buildPnpmProject {
-            src = ./fixtures/workspace;
-            lockFile = ./fixtures/negative/tampered.lock.json;
-          }).packages."@example/app";
-    in
-    pkgs.runCommand "tampered" { } ''
+    pkgs.runCommand "integrity" { } ''
       grep -i 'integrity' ${failure}/testBuildFailure.log
       touch $out
     '';
-
-  # Evaluation fails for a lock that does not match pnpm-lock.yaml (here the
-  # lock of the other fixture), and for a lock of another format version.
-  lock-checks =
-    assert fails
-      (buildPnpmProject {
-        src = ./fixtures/workspace;
-        lockFile = ./fixtures/sources/pnpm-purifier.lock.json;
-      }).packages.sources.drvPath;
-    assert fails
-      (buildPnpmProject {
-        src = ./fixtures/workspace;
-        lockFile = ./fixtures/other-version.lock.json;
-      }).packages."@example/app".drvPath;
-    # An artifact with neither mirrors nor a hash, as a hand edit leaves it.
-    assert fails
-      (buildPnpmProject {
-        src = ./fixtures/workspace;
-        lockFile = ./fixtures/negative/malformed.lock.json;
-      }).packages."@example/app".drvPath;
-    pkgs.runCommand "lock-checks" { } "touch $out";
 }

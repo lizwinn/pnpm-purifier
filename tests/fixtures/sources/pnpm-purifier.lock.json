@@ -1,34 +1,6 @@
 {
-  "version": 1,
-  "pnpmVersion": "12.9.0",
-  "nodeVersion": "24.21.0",
-  "registries": {
-    "default": "https://registry.npmjs.org/",
-    "scopes": {
-      "@jsr": "https://npm.jsr.io/"
-    }
-  },
+  "version": 2,
   "pnpmLockHash": "d863690a74de343510d7e87e1cf3959871e65b65ca71968ed4056745437aba6c",
-  "platforms": {
-    "os": [
-      "linux",
-      "darwin"
-    ],
-    "cpu": [
-      "x64",
-      "arm64"
-    ],
-    "libc": [
-      "glibc"
-    ]
-  },
-  "projects": [
-    {
-      "name": "sources",
-      "path": "."
-    }
-  ],
-  "gitSubdirectories": {},
   "artifacts": [
     {
       "path": "git/salsa.debian.org/js-team/node-ms/3171b261a43eeca83fbd2d6711c0f74e665584d1/package.tgz",
@@ -40,30 +12,7 @@
         "commitObject": null
       },
       "hash": "sha256-0o1BeVulc4JlFsxRwppY85AFYHa7+8M0tfEiSeL6Xd4="
-    },
-    {
-      "path": "https/codeload.github.com/sindresorhus/escape-string-regexp/tar.gz/ba9a4473850cb367936417e97f1f2191b7cc67dd",
-      "url": "https://codeload.github.com/sindresorhus/escape-string-regexp/tar.gz/ba9a4473850cb367936417e97f1f2191b7cc67dd",
-      "mirrors": [],
-      "hash": "sha256-0k6qC4n+dMymvtaSLoN+toV3OnAohjAQ1jJwR8FsBJA="
-    },
-    {
-      "path": "https/codeload.github.com/sindresorhus/is-plain-obj/tar.gz/68e8cc77bb1bbd0bf7d629d3574b6ca70289b2cc",
-      "url": "https://codeload.github.com/sindresorhus/is-plain-obj/tar.gz/68e8cc77bb1bbd0bf7d629d3574b6ca70289b2cc",
-      "mirrors": [],
-      "hash": "sha256-dckvACtk4oIGCnBzKEN+Xa4DyGrzo6DsWc/0v25BnI8="
-    },
-    {
-      "path": "https/registry.npmjs.org/is-number/-/is-number-6.0.0.tgz",
-      "url": "https://registry.npmjs.org/is-number/-/is-number-6.0.0.tgz",
-      "mirrors": [],
-      "hash": "sha256-YlifJRFQQsTTSGO8jmq0eQqJILgRlJww4OvFczrKZss="
-    },
-    {
-      "path": "https/registry.yarnpkg.com/is-odd/-/is-odd-3.0.1.tgz",
-      "url": "https://registry.yarnpkg.com/is-odd/-/is-odd-3.0.1.tgz",
-      "mirrors": [],
-      "hash": "sha256-E8I7Px86XBRriQbiPI5nT45Kb/RLd3IOHUvdt7LK8xI="
     }
-  ]
+  ],
+  "contentHash": "e5c60ce8020999c8143f776606e18fa9f0d9e8fb7715162f57ea78f42a9d8409"
 }

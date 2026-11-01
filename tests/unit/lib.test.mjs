@@ -9,11 +9,15 @@ import { fileURLToPath } from "node:url";
 import zlib from "node:zlib";
 import {
   LOCK_VERSION,
+  canonicalJSON,
+  contentHash,
+  derivedFilePaths,
   isMetadataPath,
   isResolving,
   localRegistry,
   localizeMetadata,
   lockImporters,
+  lockPackages,
   lockProblems,
   needsRegistry,
   outsideResolutions,
@@ -21,6 +25,8 @@ import {
   pathOfGit,
   pathOfUrl,
   platformFilters,
+  registriesCover,
+  registriesFromNpmrc,
   registryCredentials,
   registryLines,
   restoreLockText,
@@ -224,16 +230,79 @@ test("needsRegistry is true for installing commands only", () => {
   }
 });
 
+test("canonicalJSON sorts keys and leaves out whitespace, as builtins.toJSON does", () => {
+  assert.equal(canonicalJSON({ b: [1, { d: null, c: true }], a: "x\"y" }), '{"a":"x\\"y","b":[1,{"c":true,"d":null}]}');
+});
+
+test("contentHash covers everything but itself", () => {
+  const lockfile = JSON.parse(read("prepare/pnpm-purifier.lock.json"));
+  assert.equal(contentHash(lockfile), lockfile.contentHash);
+  assert.equal(contentHash({ ...lockfile, contentHash: "other" }), lockfile.contentHash);
+  assert.notEqual(contentHash({ ...lockfile, pnpmVersion: "0.0.0" }), lockfile.contentHash);
+});
+
 test("lockProblems accepts the fixture locks and names what is wrong with others", () => {
-  for (const f of ["workspace", "sources", "prepare"]) {
+  for (const f of ["sources", "prepare"]) {
     assert.deepEqual(lockProblems(JSON.parse(read(`${f}/pnpm-purifier.lock.json`))), [], f);
   }
-  const good = JSON.parse(read("workspace/pnpm-purifier.lock.json"));
+  for (const f of ["negative/missing-entry.lock.json", "negative/swapped-file.lock.json"]) {
+    assert.deepEqual(lockProblems(JSON.parse(read(f))), [], f);
+  }
+  assert.ok(lockProblems(JSON.parse(read("negative/tampered-hash.lock.json"))).some((p) => /contentHash/.test(p)));
+  const good = JSON.parse(read("prepare/pnpm-purifier.lock.json"));
+  const file = good.artifacts.find((a) => a.url);
   assert.match(lockProblems([])[0], /not a JSON object/);
   assert.match(lockProblems({ ...good, version: LOCK_VERSION + 1 })[0], /format/);
   assert.ok(lockProblems({ ...good, artifacts: "x" }).some((p) => /artifacts is not a list/.test(p)));
-  const tampered = { ...good, artifacts: [{ ...good.artifacts[0], hash: "sha256-short" }] };
+  const tampered = { ...good, artifacts: [{ ...file, hash: "sha256-short" }] };
   assert.ok(lockProblems(tampered).some((p) => /sha256 hash/.test(p)));
-  const noUrl = { ...good, artifacts: [{ path: "https/x/y.tgz", mirrors: [], hash: good.artifacts[0].hash }] };
+  const noUrl = { ...good, artifacts: [{ path: "https/x/y.tgz", mirrors: [], hash: file.hash }] };
   assert.ok(lockProblems(noUrl).some((p) => /no url/.test(p)));
+});
+
+test("lockPackages reads names, versions, resolutions and platform filters", () => {
+  const packages = lockPackages(read("workspace/pnpm-lock.yaml"));
+  const esbuild = packages.find((p) => p.key === "@esbuild/linux-x64@0.25.12");
+  assert.equal(esbuild.name, "@esbuild/linux-x64");
+  assert.equal(esbuild.version, "0.25.12");
+  assert.deepEqual(esbuild.filters, { cpu: ["x64"], os: ["linux"] });
+  assert.match(esbuild.resolution.integrity, /^sha512-/);
+  const sources = lockPackages(read("sources/pnpm-lock.yaml"));
+  const git = sources.find((p) => p.resolution.type === "git");
+  assert.equal(git.resolution.repo, "https://salsa.debian.org/js-team/node-ms.git");
+  assert.ok(sources.some((p) => p.resolution.directory));
+});
+
+test("derivedFilePaths holds the registry and tarball files of pnpm-lock.yaml", () => {
+  const registries = registriesFromNpmrc("");
+  const paths = derivedFilePaths(read("workspace/pnpm-lock.yaml"), registries);
+  assert.ok(paths.has("https/registry.npmjs.org/ms/-/ms-2.1.3.tgz"));
+  assert.ok(paths.has("https/registry.npmjs.org/@esbuild/linux-x64/-/linux-x64-0.25.12.tgz"));
+  const sources = derivedFilePaths(read("sources/pnpm-lock.yaml"), registries);
+  assert.ok([...sources].some((p) => p.startsWith("https/codeload.github.com/")));
+  assert.ok(![...sources].some((p) => p.startsWith("git/")));
+  // Every file entry of a fixture lockfile is a file pnpm-lock.yaml does
+  // not imply.
+  const prepare = JSON.parse(read("prepare/pnpm-purifier.lock.json"));
+  const prepareDerived = derivedFilePaths(read("prepare/pnpm-lock.yaml"), registries);
+  assert.ok(prepare.artifacts.every((a) => !prepareDerived.has(a.path)));
+});
+
+test("registriesFromNpmrc reads registry lines, a later line winning", () => {
+  assert.deepEqual(registriesFromNpmrc(""), {
+    default: "https://registry.npmjs.org/",
+    scopes: { "@jsr": "https://npm.jsr.io/" },
+  });
+  const text = "registry=https://a.example/npm\n@x:registry = https://b.example/\nregistry=https://c.example/\n";
+  assert.deepEqual(registriesFromNpmrc(text), {
+    default: "https://c.example/",
+    scopes: { "@jsr": "https://npm.jsr.io/", "@x": "https://b.example/" },
+  });
+});
+
+test("registriesCover tells whether the user config adds registries", () => {
+  const project = registriesFromNpmrc("@x:registry=https://b.example/\n");
+  assert.ok(registriesCover(project, { default: "https://registry.npmjs.org", scopes: { "@x": "https://b.example" } }));
+  assert.ok(!registriesCover(project, { default: "https://mirror.example/", scopes: {} }));
+  assert.ok(!registriesCover(project, { default: "https://registry.npmjs.org/", scopes: { "@y": "https://c.example/" } }));
 });
