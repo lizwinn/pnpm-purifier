@@ -35,20 +35,26 @@ nix run github:nix-purifiers/pnpm-purifier -- lock
 The lock run keeps the resolution in `pnpm-lock.yaml`, and it writes that
 file first when the project has none. It then writes
 `pnpm-purifier.lock.json` when the project needs one, and otherwise it says
-that the project needs none. Commit both lockfiles.
+that the project needs none. Commit both lockfiles. Then build the project
+from its directory, with no Nix file added to it:
+
+```zsh
+nix build --impure --expr '
+  let
+    purifier = builtins.getFlake "github:nix-purifiers/pnpm-purifier";
+    pkgs = import purifier.inputs.nixpkgs {
+      system = builtins.currentSystem;
+      overlays = [ purifier.overlays.default ];
+    };
+  in
+  (pkgs.pnpm-purifier.buildPnpmProject { src = ./.; }).packages."@example/app"'
+```
 
 The flake's `overlays.default` adds one attribute to a package set: the
 scope `pnpm-purifier`, which holds the builder `buildPnpmProject` and the
-`cli` command. A package written for `callPackage` takes the scope by
-name:
-
-```nix
-# package.nix
-{ pnpm-purifier }:
-(pnpm-purifier.buildPnpmProject { src = ./.; }).packages."@example/app"
-```
-
-A flake applies the overlay and builds the project:
+`cli` command. A project whose authors want a flake can have one that
+packages the project. It calls the builder directly, and it can live in the
+repository of the project or in another one:
 
 ```nix
 {
@@ -242,7 +248,7 @@ These limits affect a project:
 
 [giget](https://github.com/unjs/giget) is a command-line tool that
 downloads templates from git repositories. It is a pnpm project with a
-`build` script, so the quickstart applies to it as it stands. In a
+`build` script, so the Quickstart applies to it as it stands. In a
 checkout of giget:
 
 ```zsh
@@ -251,7 +257,23 @@ nix run github:nix-purifiers/pnpm-purifier -- lock
 
 The lock run says that giget needs no `pnpm-purifier.lock.json`, because
 every package in its `pnpm-lock.yaml` comes from the npm registry with an
-integrity hash. The everyday loop then runs through pnpm-purifier:
+integrity hash. The build from the directory of giget is the Quickstart
+build with the name of the package:
+
+```zsh
+nix build --impure --expr '
+  let
+    purifier = builtins.getFlake "github:nix-purifiers/pnpm-purifier";
+    pkgs = import purifier.inputs.nixpkgs {
+      system = builtins.currentSystem;
+      overlays = [ purifier.overlays.default ];
+    };
+  in
+  (pkgs.pnpm-purifier.buildPnpmProject { src = ./.; }).packages.giget'
+./result/bin/giget --help
+```
+
+The everyday loop runs through pnpm-purifier:
 
 ```zsh
 alias pnpm='nix run github:nix-purifiers/pnpm-purifier --'
@@ -262,30 +284,7 @@ pnpm add kleur
 ```
 
 `pnpm install` installs from the locked files, offline. `pnpm add kleur`
-resolves online and locks again. A `flake.nix` beside `package.json`
-builds giget in the Nix sandbox:
-
-```nix
-{
-  inputs.pnpm-purifier.url = "github:nix-purifiers/pnpm-purifier";
-  inputs.nixpkgs.follows = "pnpm-purifier/nixpkgs";
-
-  outputs = { nixpkgs, pnpm-purifier, ... }:
-    let
-      system = "x86_64-linux";
-      pkgs = import nixpkgs {
-        inherit system;
-        overlays = [ pnpm-purifier.overlays.default ];
-      };
-    in
-    {
-      packages.${system}.default =
-        (pkgs.pnpm-purifier.buildPnpmProject { src = ./.; }).packages.giget;
-    };
-}
-```
-
-`nix build` then builds giget, and `./result/bin/giget --help` runs it.
+resolves online and locks again.
 
 ## Credits
 
