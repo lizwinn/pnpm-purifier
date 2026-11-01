@@ -61,7 +61,7 @@ Each source that `pnpm-lock.yaml` can express is locked as follows.
 | Any other git repository | `{commit, repo, type: git}` | git: the checkout of the commit, which Nix packs as a tarball that the registry serves |
 | A local directory or tarball (`file:`, `link:`, `workspace:`) | `{directory}` or `{tarball: file:…}` | none: it is part of the project source |
 
-A git entry is `{ path, git = { url, rev, submodules = false, leaveDotGit = false }, hash }`,
+A git entry is `{ path, git = { url, rev, submodules = false, leaveDotGit = false, commitObject = null }, hash }`,
 where `hash` is what `nix-prefetch-git` reports. pnpm requires an
 integrity for each tarball, and the rewritten entry carries the integrity
 of the tarball served in that run.

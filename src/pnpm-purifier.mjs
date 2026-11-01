@@ -527,7 +527,7 @@ function lockGit(resolution) {
     path: resolution.path,
     // pnpm installs the files of the commit, not a repository, so the
     // checkout keeps no .git.
-    git: { url: repo, rev: commit, submodules: false, leaveDotGit: false },
+    git: { url: repo, rev: commit, submodules: false, leaveDotGit: false, commitObject: null },
     hash,
   };
   // The same derivation as the git entry's in dependencies.nix, named as
