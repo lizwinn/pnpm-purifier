@@ -41,9 +41,6 @@
   # pnpm-lock.yaml alone. A packaging flake keeps it outside `src` for a
   # project whose author does not.
   lockFile ? src + "/pnpm-purifier.lock.json",
-  # pnpm's own lockfile. A file outside `src` replaces any copy in it, for a
-  # project whose source holds none.
-  pnpmLock ? src + "/pnpm-lock.yaml",
   # The pnpm that runs the build. The default is the package set's pnpm of
   # the major version (pnpm_10, pnpm_11 or pnpm_12) that the
   # `packageManager` field of package.json names, or that the purifier
@@ -73,7 +70,7 @@ let
   # library's checkLock when the lockfiles cannot be used.
   readLock = import ./read-lock.nix { inherit purifier; };
   lock = purifier.checkLock (readLock {
-    inherit src lockFile pnpmLock;
+    inherit src lockFile;
   });
 
   pnpmVersion = lock.pnpm.version;
@@ -102,7 +99,7 @@ let
     in
     !(
       (type == "directory" && (name == "node_modules" || name == ".pnpm-purifier"))
-      # The lockfiles go to the build as `lockFile` and `pnpmLock`.
+      # The purifier lockfile goes to the build as `lockFile`.
       || name == "pnpm-purifier.lock.json"
       || name == ".git"
       || name == ".idea"
@@ -152,7 +149,6 @@ let
       # downloading them.
       export npm_config_nodedir=${nodejs}
       mkdir -p "$HOME" "$XDG_RUNTIME_DIR"
-      cp --no-preserve=mode ${pnpmLock} pnpm-lock.yaml
       patchShebangs --build .
       ${registry} pnpm install --frozen-lockfile --store-dir "$TMPDIR/store" ${filterArgs}
       for modules in $(find . -name node_modules -type d -prune); do

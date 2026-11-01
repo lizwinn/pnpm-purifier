@@ -36,11 +36,11 @@ let
   fails = value: !(builtins.tryEval (builtins.deepSeq value value)).success;
 
   # The lock of the sources fixture, whose purifier lockfile holds the
-  # checkout hash of a git dependency, read with another lockfile or
-  # pnpm-lock.yaml. `problems` must name `pnpm-purifier lock`, and a build
-  # must fail during evaluation.
+  # checkout hash of a git dependency, read with another purifier lockfile
+  # or with another project tree. `problems` must name `pnpm-purifier
+  # lock`, and the downloads of a build must fail during evaluation.
   sourcesLock = args: readLock ({ src = ./fixtures/sources; } // args);
-  sourcesWith = args: (build ({ src = ./fixtures/sources; } // args)).packages.sources;
+  sourcesWith = args: (build ({ src = ./fixtures/sources; } // args)).dependencies;
   rejected =
     name: args: pattern:
     let
@@ -55,19 +55,14 @@ let
     assert fails (sourcesWith args).drvPath;
     pkgs.runCommand name { } "touch $out";
 
-  # A fixture without its lockfiles, as a project whose author keeps no
-  # purifier lockfile and no pnpm-lock.yaml.
-  withoutLocks =
+  # A fixture without its purifier lockfile, as a project whose author
+  # keeps only pnpm-lock.yaml.
+  withoutPurifierLock =
     fixture:
     builtins.path {
       path = fixture;
-      name = "without-locks";
-      filter =
-        path: _:
-        !(builtins.elem (baseNameOf path) [
-          "pnpm-purifier.lock.json"
-          "pnpm-lock.yaml"
-        ]);
+      name = "without-purifier-lock";
+      filter = path: _: baseNameOf path != "pnpm-purifier.lock.json";
     };
 in
 {
@@ -85,10 +80,11 @@ in
 
   # A lockfile older than the project fails during evaluation, naming
   # `pnpm-purifier lock`: the purifier lockfile of the sources fixture was
-  # made from its own pnpm-lock.yaml, and the lock gets the pnpm-lock.yaml
-  # of the workspace fixture instead.
+  # made from the pnpm-lock.yaml of that fixture, and here it is the
+  # external lockfile of the prepare fixture, whose pnpm-lock.yaml differs.
   conformance-stale = rejected "conformance-stale" {
-    pnpmLock = ./fixtures/workspace/pnpm-lock.yaml;
+    src = withoutPurifierLock ./fixtures/prepare;
+    lockFile = ./fixtures/sources/pnpm-purifier.lock.json;
   } ".*changed since.*";
 
   # A lockfile with a changed hash fails during evaluation: the hash of the
@@ -114,17 +110,16 @@ in
       lockFile = ./fixtures/negative/malformed.lock.json;
     } ".*none of a file, a git or an inline entry.*");
 
-  # A project whose source holds no lockfile builds from lockfiles kept
-  # outside it, as a packaging flake keeps them for a project its author
-  # does not change: the purifier lockfile and pnpm-lock.yaml of the
-  # sources fixture, given as `lockFile` and `pnpmLock`.
+  # A project whose source holds only the files of pnpm builds from a
+  # purifier lockfile kept outside it, as a packaging flake keeps one for a
+  # project its author does not change: the sources fixture without its
+  # purifier lockfile, which is given as `lockFile`.
   conformance-external =
     let
       project =
         (build {
-          src = withoutLocks ./fixtures/sources;
+          src = withoutPurifierLock ./fixtures/sources;
           lockFile = ./fixtures/sources/pnpm-purifier.lock.json;
-          pnpmLock = ./fixtures/sources/pnpm-lock.yaml;
         }).packages.sources;
     in
     pkgs.runCommand "conformance-external" { } ''

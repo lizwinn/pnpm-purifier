@@ -80,15 +80,15 @@ credentials. Its result has:
 - `lock`: the lock in memory, as `readLock` gives it.
 
 `nix/lib/build-pnpm-project.nix` documents the builder's other arguments:
-`lockFile` and `pnpmLock` (see Offline work), `pnpm` (the default is
+`lockFile` (see Offline work), `pnpm` (the default is
 nixpkgs' pnpm of the major version that `packageManager` in `package.json`
 names, or that the lockfile records), `buildScript`, `nativeBuildInputs`
 (for native addons) and `srcFilter`. Native addons build against the
 headers of the build's Node.js, which pnpm-purifier names in
 `npm_config_nodedir`.
 
-`lib.pnpm-purifier.readLock { src; lockFile ? …; pnpmLock ? …; }` reads
-both lockfiles into the lock shape of the purifier library: `purifier`,
+`lib.pnpm-purifier.readLock { src; lockFile ? …; }` reads
+`pnpm-lock.yaml` in `src` and the purifier lockfile into the lock shape of the purifier library: `purifier`,
 `entries` (the download entries, each with `systems` when only some
 systems need it), `outputs` (the workspace projects by name) and
 `problems` (why the lockfiles cannot be used, each naming the command
@@ -130,13 +130,13 @@ test scripts and the editor work with no network, and so does the Nix
 build of the project.
 
 A project whose author keeps no purifier lockfile can still be built, from
-lockfiles a packaging flake keeps beside its own Nix files. Every command
+a purifier lockfile that a packaging flake keeps beside its own Nix files.
+`pnpm-lock.yaml` always comes from the project tree. Every command
 takes `--lockfile <path>`, such as `pnpm-purifier lock --lockfile
 ../packaging/app.lock.json`, or the environment variable
 `PNPM_PURIFIER_LOCKFILE`, which the dev shell of the packaging flake can
-set; the flag wins over the variable. The builder takes `lockFile` for the
-purifier lockfile and `pnpmLock` for `pnpm-lock.yaml`; a file given there
-replaces any copy in `src`.
+set; the flag wins over the variable. The builder takes the path of that
+purifier lockfile as `lockFile`.
 
 ## Editor
 
