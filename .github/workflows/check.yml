@@ -140,23 +140,33 @@ jobs:
           cp -r tests/fixtures/workspace "$RUNNER_TEMP/project"
           cd "$RUNNER_TEMP/project"
           nix run "$GITHUB_WORKSPACE" -- prefetch
-      - name: Cut the runner off the network
+      # The runner agent keeps its connection to GitHub. The Nix daemon and
+      # its builders (root and the nixbld group) lose the network, and the
+      # commands below run in a network namespace of their own, which has
+      # only a loopback interface. Ubuntu allows that namespace to an
+      # unprivileged user once the AppArmor restriction is off.
+      - name: Cut Nix off the network
         run: |
           set -euo pipefail
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           for tables in iptables ip6tables; do
             sudo "$tables" -A OUTPUT -o lo -j ACCEPT
-            sudo "$tables" -P OUTPUT DROP
+            sudo "$tables" -A OUTPUT -m owner --uid-owner 0 -j REJECT
+            sudo "$tables" -A OUTPUT -m owner --gid-owner nixbld -j REJECT
           done
-          if curl --silent --max-time 10 https://registry.npmjs.org/ > /dev/null; then
-            echo "the network is still reachable" >&2
-            exit 1
-          fi
       - name: Install, build, test and run with no network
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP/project"
-          purifier=.pnpm-purifier/command/bin/pnpm-purifier
-          "$purifier" install
-          "$purifier" --recursive run build
-          "$purifier" --recursive test
-          .pnpm-purifier/node/bin/node packages/app/dist/main.js offline | grep -F 'Hello, '
+          unshare --map-root-user --net bash -euo pipefail -c '
+            ip link set lo up
+            if curl --silent --max-time 10 https://registry.npmjs.org/ > /dev/null; then
+              echo "the network is still reachable" >&2
+              exit 1
+            fi
+            purifier=.pnpm-purifier/command/bin/pnpm-purifier
+            "$purifier" install
+            "$purifier" --recursive run build
+            "$purifier" --recursive test
+            .pnpm-purifier/node/bin/node packages/app/dist/main.js offline | grep -F "Hello, "
+          '
