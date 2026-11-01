@@ -58,7 +58,8 @@
             checks = import ../../../tests {
               inherit pkgs;
               inherit (self.packages.${system}) cli;
-              inherit (lib.pnpm-purifier) buildPnpmProject readLock;
+              inherit (pkgs) buildPnpmProject;
+              inherit (lib.pnpm-purifier) readLock;
               inherit (lib) purifier;
             };
             treefmt.programs.nixfmt.enable = true;

@@ -2,11 +2,14 @@
 # pnpm-lock.yaml and, when the project has one, the purifier lockfile
 # `pnpm-purifier lock` writes beside it.
 #
-# The flake's library has it as `lib.pnpm-purifier.buildPnpmProject`. The
-# first argument set here is what the library gives it (the purifier
-# library); the second is what a caller passes:
+# It is a package for callPackage. The flake's `overlays.default` adds it
+# to the package set as `buildPnpmProject`, with the purifier library
+# (`lib.purifier` of github:nix-purifiers/purifier) as `purifier`, and
+# `buildPnpmProject.override` replaces any package it takes. A package
+# takes it by name:
 #
-#   lib.pnpm-purifier.buildPnpmProject { inherit pkgs; src = ./.; }
+#   { buildPnpmProject }:
+#   (buildPnpmProject { src = ./.; }).packages."@example/app"
 #
 # The builder returns
 #
@@ -27,10 +30,20 @@
 #   dependencies       the manifest of the entries for the host system,
 #                      which the local registry serves from
 #   lock               the lock in memory, as `readLock` gives it
-{ purifier }:
 {
-  # The package set the build uses.
+  # The package set, from which the builder takes pnpm_10, pnpm_11 or
+  # pnpm_12 by the major version the project uses.
   pkgs,
+  lib,
+  stdenv,
+  makeWrapper,
+  nodejs,
+  linkFarm,
+  writeText,
+  callPackage,
+  purifier,
+}:
+{
   # The root of the pnpm workspace or project, which holds pnpm-lock.yaml.
   src,
   # Fetchers for the purifier library's fetchEntry, by name, such as a
@@ -58,14 +71,6 @@
   srcFilter ? null,
 }:
 let
-  inherit (pkgs)
-    lib
-    stdenv
-    makeWrapper
-    nodejs
-    linkFarm
-    ;
-
   # The lock in memory (read-lock.nix), which fails evaluation through the
   # library's checkLock when the lockfiles cannot be used.
   readLock = import ./read-lock.nix { inherit purifier; };
@@ -87,7 +92,7 @@ let
         or (throw "pnpm-purifier: the package set has no pnpm_${major} for the pnpm ${pnpmVersion} the project uses; pass `pnpm`.");
 
   inherit (lock.pnpm) registries;
-  registriesFile = pkgs.writeText "pnpm-purifier-registries.json" (builtins.toJSON registries);
+  registriesFile = writeText "pnpm-purifier-registries.json" (builtins.toJSON registries);
 
   # The workspace projects by package name.
   projects = lock.outputs;
@@ -113,7 +118,7 @@ let
     filter = if srcFilter != null then srcFilter else defaultSrcFilter;
   };
 
-  dependencies = pkgs.callPackage ./dependencies.nix {
+  dependencies = callPackage ./dependencies.nix {
     entries = purifier.entriesFor stdenv.hostPlatform.system lock;
     inherit purifier fetchers;
   };

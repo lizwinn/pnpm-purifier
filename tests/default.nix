@@ -8,7 +8,7 @@
 {
   pkgs,
   cli,
-  # `lib.pnpm-purifier.buildPnpmProject` of this flake.
+  # `pkgs.buildPnpmProject`, which the package overlay of this flake adds.
   buildPnpmProject,
   # `lib.pnpm-purifier.readLock` of this flake.
   readLock,
@@ -19,7 +19,7 @@ let
   inherit (pkgs) lib;
 
   # Every fixture builds the way a consumer's project does.
-  build = args: buildPnpmProject ({ inherit pkgs; } // args);
+  build = buildPnpmProject;
 
   # A pnpm 12 workspace (tests/fixtures/workspace): @example/greet, a
   # library with a registry dependency and a build script that runs by its

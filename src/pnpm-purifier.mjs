@@ -695,8 +695,8 @@ async function interactive(args) {
 function builderExpr(root) {
   const lockFile = lockfileOption != null ? ` lockFile = /. + ${JSON.stringify(lockfileOption)};` : "";
   return (
-    `((import ${JSON.stringify(path.join(libDir, "build-pnpm-project.nix"))} { purifier = ${libraryExpr()}; }) ` +
-    `{ pkgs = ${nixpkgsExpr()}; src = /. + ${JSON.stringify(root)};${lockFile} })`
+    `((${nixpkgsExpr()}.callPackage ${JSON.stringify(path.join(libDir, "build-pnpm-project.nix"))} { purifier = ${libraryExpr()}; }) ` +
+    `{ src = /. + ${JSON.stringify(root)};${lockFile} })`
   );
 }
 

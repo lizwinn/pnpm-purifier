@@ -35,8 +35,19 @@ nix run github:nix-purifiers/pnpm-purifier -- lock
 The lock run keeps the resolution in `pnpm-lock.yaml`, and it writes that
 file first when the project has none. It then writes
 `pnpm-purifier.lock.json` when the project needs one, and otherwise it says
-that the project needs none. Commit both lockfiles. The flake's library has
-the builder, as `lib.pnpm-purifier.buildPnpmProject`:
+that the project needs none. Commit both lockfiles.
+
+The flake's `overlays.default` adds the builder `buildPnpmProject` to a
+package set, beside the builders of nixpkgs. A package written for
+`callPackage` takes it by name:
+
+```nix
+# package.nix
+{ buildPnpmProject }:
+(buildPnpmProject { src = ./.; }).packages."@example/app"
+```
+
+A flake applies the overlay and builds the project:
 
 ```nix
 {
@@ -46,11 +57,11 @@ the builder, as `lib.pnpm-purifier.buildPnpmProject`:
   outputs = { nixpkgs, pnpm-purifier, ... }:
     let
       system = "x86_64-linux";
-      pkgs = nixpkgs.legacyPackages.${system};
-      project = pnpm-purifier.lib.pnpm-purifier.buildPnpmProject {
-        inherit pkgs;
-        src = ./.;
+      pkgs = import nixpkgs {
+        inherit system;
+        overlays = [ pnpm-purifier.overlays.default ];
       };
+      project = pkgs.buildPnpmProject { src = ./.; };
     in
     {
       packages.${system}.example-app = project.packages."@example/app";
@@ -59,9 +70,11 @@ the builder, as `lib.pnpm-purifier.buildPnpmProject`:
 }
 ```
 
-The builder takes `pkgs`, `src` and `fetchers`, which go to the purifier
-library's `fetchEntry`; a `fetchurl` there serves a company mirror or
-credentials. Its result has:
+The builder takes the packages it needs from the package set by name, so
+`buildPnpmProject.override` replaces any of them. Its own arguments are
+`src`, `lockFile` and `fetchers`, which go to the purifier library's
+`fetchEntry`; a `fetchurl` there serves a company mirror or credentials.
+Its result has:
 
 - `packages.<name>`: each workspace project, built in the sandbox and
   deployed with its production dependencies under
@@ -80,7 +93,7 @@ credentials. Its result has:
 - `lock`: the lock in memory, as `readLock` gives it.
 
 `nix/lib/build-pnpm-project.nix` documents the builder's other arguments:
-`lockFile` (see Offline work), `pnpm` (the default is
+`lockFile` (see Working offline), `pnpm` (the default is
 nixpkgs' pnpm of the major version that `packageManager` in `package.json`
 names, or that the lockfile records), `buildScript`, `nativeBuildInputs`
 (for native addons) and `srcFilter`. Native addons build against the
@@ -95,7 +108,7 @@ systems need it), `outputs` (the workspace projects by name) and
 that fixes it). The builder passes it to the library's `checkLock` and
 takes the downloads of its system from `entriesFor`.
 
-## Everyday loop
+## Development loop
 
 `pnpm-purifier` takes pnpm's arguments, so it can stand in for `pnpm`, for
 example through `alias pnpm=pnpm-purifier`. It runs the pnpm of the major
@@ -111,14 +124,14 @@ nixpkgs (pnpm 10, 11 or 12), and keeps pnpm on that version.
 | `pnpm-purifier --online <arguments>` | pnpm online, then `pnpm-purifier lock` when `pnpm-lock.yaml` changed |
 | `pnpm-purifier lock` | the lock run, which keeps the resolution in `pnpm-lock.yaml` |
 | `pnpm-purifier update [<package>...]` | `pnpm update --lockfile-only` for every package or the named ones, then the lock run, which updates both lockfiles |
-| `pnpm-purifier prefetch` | see Offline work |
+| `pnpm-purifier prefetch` | see Working offline |
 | `pnpm-purifier publish [pnpm publish arguments]` | Nix builds the `release`, and `pnpm publish` uploads each of its tarballs |
 
 `PNPM_PURIFIER=0` makes `pnpm-purifier` run pnpm as it is. A lock run
 installs twice, once online, recording, and once offline from what it
 recorded.
 
-## Offline work
+## Working offline
 
 `pnpm-purifier prefetch` realizes in the Nix store the locked files for the
 current system and the tools that day-to-day work runs: the
@@ -145,7 +158,7 @@ An editor's language server, such as the TypeScript server, reads
 one does, so the editor works as it does with pnpm alone, with the network
 cut off after a prefetch.
 
-## Errors and fixes
+## Troubleshooting
 
 Each common mistake stops with what went wrong and the command to run.
 
@@ -160,7 +173,7 @@ Each common mistake stops with what went wrong and the command to run.
 | A locked file does not match `pnpm-lock.yaml` | pnpm refuses it with `ERR_PNPM_TARBALL_INTEGRITY` |
 | A download changed upstream | Nix's fetch fails with the URL and both hashes, and the command names `pnpm-purifier lock` |
 
-## Sources supported and refused
+## Supported language repositories
 
 Each source that `pnpm-lock.yaml` can express is supported. While pnpm runs,
 pnpm-purifier rewrites the entries that pnpm fetches by absolute URL or
@@ -202,10 +215,9 @@ versions.
 These limits affect a project:
 
 - The Nix build runs on x86_64-linux and aarch64-linux.
-
-- Registry metadata is not locked, except as above, because a registry
-  changes it each time a package publishes. A command that resolves
-  versions runs online, and `pnpm-purifier lock` records the result.
+- A command that resolves versions reads registry metadata, which a
+  registry changes each time a package publishes, so it runs online, and
+  `pnpm-purifier lock` records the result.
 - A git dependency installs without its submodules, because pnpm clones git
   dependencies without them and the archives of GitHub, GitLab and
   Bitbucket hold none.
@@ -253,14 +265,13 @@ builds giget in the Nix sandbox:
   outputs = { nixpkgs, pnpm-purifier, ... }:
     let
       system = "x86_64-linux";
-      pkgs = nixpkgs.legacyPackages.${system};
-      project = pnpm-purifier.lib.pnpm-purifier.buildPnpmProject {
-        inherit pkgs;
-        src = ./.;
+      pkgs = import nixpkgs {
+        inherit system;
+        overlays = [ pnpm-purifier.overlays.default ];
       };
     in
     {
-      packages.${system}.default = project.packages.giget;
+      packages.${system}.default = (pkgs.buildPnpmProject { src = ./.; }).packages.giget;
     };
 }
 ```
