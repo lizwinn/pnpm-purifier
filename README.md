@@ -216,28 +216,24 @@ These are refused, or left to the user, for a reason in the mechanism:
   nixpkgs' `fetchurl` with `netrcPhase`. The lock run forwards the
   credentials of `.npmrc`.
 
-## Real-world projects
+## Examples
 
-[unjs/giget](https://github.com/unjs/giget) at commit
-`f1dad453055b97a81d5227edce7262c8dcaf53d2` is a command-line tool on pnpm
-11 with 421 packages in its `pnpm-lock.yaml`. Following the quickstart
-above word for word, `pnpm-purifier lock` took 15 seconds, and it reported
-that giget needs no `pnpm-purifier.lock.json`, because every download of
-giget is a registry tarball. `pnpm-purifier install` installed offline,
-`pnpm-purifier run build` built it with obuild,
-`pnpm-purifier run test:types` type-checked it with `tsc`, as the editor's
-TypeScript server does, and `pnpm-purifier exec vitest run` passed its 58
-tests. `pnpm-purifier add kleur@4.1.5` ran online and relocked in 8
-seconds. The flake's `real-world` check builds giget at that commit in the
-sandbox from its `pnpm-lock.yaml` alone. CI runs the lock run on giget and
-checks that it leaves `pnpm-lock.yaml` as it is and writes no
-`pnpm-purifier.lock.json`.
+CI locks and builds [unjs/giget](https://github.com/unjs/giget), a
+command-line tool on pnpm 11, at commit
+`f1dad453055b97a81d5227edce7262c8dcaf53d2`. Its `pnpm-lock.yaml` holds
+421 packages, all registry tarballs, so giget needs no
+`pnpm-purifier.lock.json`. The flake's `real-world` check builds giget
+with obuild in the sandbox and runs the command it builds. The
+`conformance-relock` CI job runs the lock run on a checkout of giget and
+checks that it leaves `pnpm-lock.yaml` as it is and writes no purifier
+lockfile.
 
-Trying giget changed two things. The project pins pnpm 11.15.1 and the
-flake's pnpm 11 is 11.27.0, so pnpm tried to download 11.15.1 before the
-lock run; every pnpm that pnpm-purifier starts now stays on the version
-that runs. And an internal subcommand named `exec` hid `pnpm exec`; it is
-now `registry-exec`.
+The fixtures in `tests/fixtures/` are smaller examples, one for each kind
+of source in the table above: `workspace` (a pnpm workspace with a native
+esbuild binary), `sources` (GitHub, tarball-URL, git, directory and
+local-tarball dependencies), `prepare` (a git dependency with a prepare
+script) and `update` (a dependency locked below the newest version its
+range allows).
 
 ## Credits
 
