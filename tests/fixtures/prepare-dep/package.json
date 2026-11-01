@@ -1,0 +1,11 @@
+{
+  "name": "prepare-dep",
+  "version": "1.0.0",
+  "main": "out.js",
+  "scripts": {
+    "prepare": "node build.js"
+  },
+  "devDependencies": {
+    "picocolors": "1.1.0"
+  }
+}
