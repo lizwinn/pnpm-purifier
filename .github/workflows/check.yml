@@ -106,6 +106,22 @@ jobs:
           fi
           nix run "$GITHUB_WORKSPACE" -- prefetch
           .pnpm-purifier/command/bin/pnpm-purifier install --frozen-lockfile
+      # With an external pnpm-lock.yaml, `update` writes the updated lock at
+      # that path and leaves the copy in the tree as it is.
+      - name: Update with a pnpm-lock.yaml outside the tree
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/outside"
+          cp -r tests/fixtures/update "$RUNNER_TEMP/external"
+          cd "$RUNNER_TEMP/external"
+          cp pnpm-lock.yaml "$RUNNER_TEMP/tree-before.yaml"
+          nix run "$GITHUB_WORKSPACE" -- update --tool-lockfile "$RUNNER_TEMP/outside/pnpm-lock.yaml"
+          cmp "$RUNNER_TEMP/tree-before.yaml" pnpm-lock.yaml
+          grep -E '^  ms@2\.' "$RUNNER_TEMP/outside/pnpm-lock.yaml"
+          if grep -q '^  ms@2\.0\.0:' "$RUNNER_TEMP/outside/pnpm-lock.yaml"; then
+            echo "the external lock still holds ms 2.0.0" >&2
+            exit 1
+          fi
 
   conformance-rebuild:
     strategy:

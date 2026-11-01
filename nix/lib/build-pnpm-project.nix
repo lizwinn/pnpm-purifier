@@ -2,14 +2,15 @@
 # pnpm-lock.yaml and, when the project has one, the purifier lockfile
 # `pnpm-purifier lock` writes beside it.
 #
-# It is a package for callPackage. The flake's `overlays.default` adds it
-# to the package set as `buildPnpmProject`, with the purifier library
-# (`lib.purifier` of github:nix-purifiers/purifier) as `purifier`, and
-# `buildPnpmProject.override` replaces any package it takes. A package
-# takes it by name:
+# It is a package for callPackage in the scope `pkgs.pnpm-purifier`, which
+# the flake's `overlays.default` adds to the package set, with the purifier
+# library (`lib.purifier` of github:nix-purifiers/purifier) as `purifier`.
+# `pnpm-purifier.buildPnpmProject.override` replaces any package it takes,
+# and `pnpm-purifier.overrideScope` replaces what the scope shares. A
+# package takes the scope by name:
 #
-#   { buildPnpmProject }:
-#   (buildPnpmProject { src = ./.; }).packages."@example/app"
+#   { pnpm-purifier }:
+#   (pnpm-purifier.buildPnpmProject { src = ./.; }).packages."@example/app"
 #
 # The builder returns
 #
@@ -30,10 +31,13 @@
 #   dependencies       the manifest of the entries for the host system,
 #                      which the local registry serves from
 #   lock               the lock in memory, as `readLock` gives it
-{
-  # The package set, from which the builder takes pnpm_10, pnpm_11 or
-  # pnpm_12 by the major version the project uses.
-  pkgs,
+scope@{
+  # The pnpm packages, of which the builder takes the one of the major
+  # version the project uses, and `pnpm` when nothing names a version.
+  pnpm,
+  pnpm_10,
+  pnpm_11,
+  pnpm_12,
   lib,
   stdenv,
   makeWrapper,
@@ -54,6 +58,10 @@
   # pnpm-lock.yaml alone. A packaging flake keeps it outside `src` for a
   # project whose author does not.
   lockFile ? src + "/pnpm-purifier.lock.json",
+  # pnpm-lock.yaml; the default is the copy in `src`. An external build can
+  # pass a copy kept outside the repository, which the build uses in place
+  # of the one in `src`.
+  pnpmLock ? src + "/pnpm-lock.yaml",
   # The pnpm that runs the build. The default is the package set's pnpm of
   # the major version (pnpm_10, pnpm_11 or pnpm_12) that the
   # `packageManager` field of package.json names, or that the purifier
@@ -75,7 +83,7 @@ let
   # library's checkLock when the lockfiles cannot be used.
   readLock = import ./read-lock.nix { inherit purifier; };
   lock = purifier.checkLock (readLock {
-    inherit src lockFile;
+    inherit src lockFile pnpmLock;
   });
 
   pnpmVersion = lock.pnpm.version;
@@ -83,13 +91,13 @@ let
     if pnpm != null then
       pnpm
     else if pnpmVersion == null then
-      pkgs.pnpm
+      scope.pnpm
     else
       let
         major = builtins.head (lib.splitString "." pnpmVersion);
       in
-      pkgs."pnpm_${major}"
-        or (throw "pnpm-purifier: the package set has no pnpm_${major} for the pnpm ${pnpmVersion} the project uses; pass `pnpm`.");
+      scope."pnpm_${major}"
+        or (throw "pnpm-purifier: the builder takes pnpm 10, 11 and 12, not pnpm ${major} for the pnpm ${pnpmVersion} the project uses; pass `pnpm`.");
 
   inherit (lock.pnpm) registries;
   registriesFile = writeText "pnpm-purifier-registries.json" (builtins.toJSON registries);
@@ -154,6 +162,7 @@ let
       # downloading them.
       export npm_config_nodedir=${nodejs}
       mkdir -p "$HOME" "$XDG_RUNTIME_DIR"
+      cp --no-preserve=mode ${pnpmLock} pnpm-lock.yaml
       patchShebangs --build .
       ${registry} pnpm install --frozen-lockfile --store-dir "$TMPDIR/store" ${filterArgs}
       for modules in $(find . -name node_modules -type d -prune); do

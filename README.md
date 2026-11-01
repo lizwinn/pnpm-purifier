@@ -37,14 +37,15 @@ file first when the project has none. It then writes
 `pnpm-purifier.lock.json` when the project needs one, and otherwise it says
 that the project needs none. Commit both lockfiles.
 
-The flake's `overlays.default` adds the builder `buildPnpmProject` to a
-package set, beside the builders of nixpkgs. A package written for
-`callPackage` takes it by name:
+The flake's `overlays.default` adds one attribute to a package set: the
+scope `pnpm-purifier`, which holds the builder `buildPnpmProject` and the
+`cli` command. A package written for `callPackage` takes the scope by
+name:
 
 ```nix
 # package.nix
-{ buildPnpmProject }:
-(buildPnpmProject { src = ./.; }).packages."@example/app"
+{ pnpm-purifier }:
+(pnpm-purifier.buildPnpmProject { src = ./.; }).packages."@example/app"
 ```
 
 A flake applies the overlay and builds the project:
@@ -61,7 +62,7 @@ A flake applies the overlay and builds the project:
         inherit system;
         overlays = [ pnpm-purifier.overlays.default ];
       };
-      project = pkgs.buildPnpmProject { src = ./.; };
+      project = pkgs.pnpm-purifier.buildPnpmProject { src = ./.; };
     in
     {
       packages.${system}.example-app = project.packages."@example/app";
@@ -70,11 +71,13 @@ A flake applies the overlay and builds the project:
 }
 ```
 
-The builder takes the packages it needs from the package set by name, so
-`buildPnpmProject.override` replaces any of them. Its own arguments are
-`src`, `lockFile` and `fetchers`, which go to the purifier library's
-`fetchEntry`; a `fetchurl` there serves a company mirror or credentials.
-Its result has:
+The builder takes the packages it needs from the scope by name, so
+`pnpm-purifier.buildPnpmProject.override` replaces any of them, and
+`pnpm-purifier.overrideScope` replaces what the whole scope shares. Its own
+arguments are `src`, `lockFile`, `pnpmLock` and `fetchers`. Both lockfiles
+default to the copies in `src`, which is the recommended setup, and
+`fetchers` go to the purifier library's `fetchEntry`; a `fetchurl` there
+serves a company mirror or credentials. Its result has:
 
 - `packages.<name>`: each workspace project, built in the sandbox and
   deployed with its production dependencies under
@@ -142,14 +145,19 @@ prefetch, `.pnpm-purifier/command/bin/pnpm-purifier install`, the build and
 test scripts and the editor work with no network, and so does the Nix
 build of the project.
 
-A project whose author keeps no purifier lockfile can still be built, from
-a purifier lockfile that a packaging flake keeps beside its own Nix files.
-`pnpm-lock.yaml` always comes from the project tree. Every command
-takes `--lockfile <path>`, such as `pnpm-purifier lock --lockfile
-../packaging/app.lock.json`, or the environment variable
-`PNPM_PURIFIER_LOCKFILE`, which the dev shell of the packaging flake can
-set; the flag wins over the variable. The builder takes the path of that
-purifier lockfile as `lockFile`.
+We recommend committing both lockfiles to the repository of the project,
+and the builder and the commands look for them there. A flake can instead
+keep the build of a project external, with both lockfiles beside its own
+Nix files. Every command takes `--lockfile <path>` for the purifier
+lockfile, such as `pnpm-purifier lock --lockfile ../packaging/app.lock.json`,
+or the environment variable `PNPM_PURIFIER_LOCKFILE`. For `pnpm-lock.yaml`
+it takes `--tool-lockfile <path>` or `PNPM_PURIFIER_TOOL_LOCKFILE`. With
+either, `lock` and `update` write `pnpm-lock.yaml` at that path and leave
+the copy in the tree as it is, and `lock` starts from the copy in the tree
+when the file at that path does not exist yet. `pnpm update` also rewrites
+the ranges in `package.json`, and that change goes into the tree. A flag
+wins over its variable, and the dev shell of the packaging flake can set
+both variables. The builder takes the paths as `lockFile` and `pnpmLock`.
 
 ## Editor
 
@@ -271,7 +279,8 @@ builds giget in the Nix sandbox:
       };
     in
     {
-      packages.${system}.default = (pkgs.buildPnpmProject { src = ./.; }).packages.giget;
+      packages.${system}.default =
+        (pkgs.pnpm-purifier.buildPnpmProject { src = ./.; }).packages.giget;
     };
 }
 ```

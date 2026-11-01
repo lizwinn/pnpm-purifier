@@ -68,6 +68,7 @@ import {
   localRegistry,
   localizeMetadata,
   derivedFilePaths,
+  lockImporters,
   lockProblems,
   needsRegistry,
   outsideResolutions,
@@ -93,15 +94,32 @@ const PLATFORM_ARGS = [
 const selfPath = fileURLToPath(import.meta.url);
 const libDir = process.env.PNPM_PURIFIER_NIX_LIB ?? path.join(path.dirname(selfPath), "../nix/lib");
 
-// The purifier lockfile that `--lockfile` names, or null for the default,
-// pnpm-purifier.lock.json in the project.
 // The purifier lockfile of an external build: `--lockfile`, or else the
 // variable PNPM_PURIFIER_LOCKFILE, which the dev shell of a packaging flake
-// can set.
+// can set. Null means pnpm-purifier.lock.json in the project.
 let lockfileOption = process.env.PNPM_PURIFIER_LOCKFILE ? path.resolve(process.env.PNPM_PURIFIER_LOCKFILE) : null;
 
 function lockfilePath(root) {
   return lockfileOption ?? path.join(root, LOCK_FILE);
+}
+
+// The pnpm-lock.yaml of an external build: `--tool-lockfile`, or else the
+// variable PNPM_PURIFIER_TOOL_LOCKFILE. With it, `lock` and `update` write
+// pnpm-lock.yaml there and leave the copy in the tree as it is, and every
+// command reads that copy.
+let toolLockfileOption = process.env.PNPM_PURIFIER_TOOL_LOCKFILE
+  ? path.resolve(process.env.PNPM_PURIFIER_TOOL_LOCKFILE)
+  : null;
+
+function toolLockfilePath(root) {
+  return toolLockfileOption ?? path.join(root, "pnpm-lock.yaml");
+}
+
+// Copies the project for a run of pnpm, with the pnpm-lock.yaml of an
+// external build in place of the copy in the tree.
+function copyProjectWithLock(root, dest) {
+  copyProject(root, dest);
+  if (toolLockfileOption != null) fs.copyFileSync(toolLockfileOption, path.join(dest, "pnpm-lock.yaml"));
 }
 
 function fail(message) {
@@ -121,24 +139,35 @@ function hexDigest(buffer) {
 
 // Rewrites the pnpm-lock.yaml of `dir` to name the registry at `base` (see
 // rewriteLockText). `fileOf(path)` names the file the registry serves for a
-// git dependency.
-function rewriteLockFile(dir, base, fileOf) {
+// git dependency. With `source`, the text comes from that file, the
+// pnpm-lock.yaml of an external build, and restoreLockFile puts back the
+// file `dir` held before.
+function rewriteLockFile(dir, base, fileOf, source = null) {
   const file = path.join(dir, "pnpm-lock.yaml");
+  const original = source == null ? undefined : fs.existsSync(file) ? fs.readFileSync(file) : null;
   const integrityOf = (p) => {
     const served = fileOf(p);
     return served == null ? null : "sha512-" + createHash("sha512").update(fs.readFileSync(served)).digest("base64");
   };
   let rewritten;
   try {
-    rewritten = rewriteLockText(fs.readFileSync(file, "utf8"), base, integrityOf);
+    rewritten = rewriteLockText(fs.readFileSync(source ?? file, "utf8"), base, integrityOf);
   } catch (err) {
     fail(err.message);
   }
-  if (rewritten.pairs.length > 0) fs.writeFileSync(file, rewritten.text);
-  return { file, pairs: rewritten.pairs };
+  if (rewritten.pairs.length > 0 || source != null) fs.writeFileSync(file, rewritten.text);
+  return { file, pairs: rewritten.pairs, original };
 }
 
-function restoreLockFile({ file, pairs }) {
+function restoreLockFile({ file, pairs, original }) {
+  if (original === null) {
+    fs.rmSync(file, { force: true });
+    return;
+  }
+  if (original !== undefined) {
+    fs.writeFileSync(file, original);
+    return;
+  }
   if (pairs.length === 0 || !fs.existsSync(file)) return;
   fs.writeFileSync(file, restoreLockText(fs.readFileSync(file, "utf8"), pairs));
 }
@@ -424,11 +453,23 @@ async function installFrom(project, work, registries, server, gitFiles, extraEnv
 
 async function lock(root = process.cwd()) {
   const started = Date.now();
-  const lockYaml = path.join(root, "pnpm-lock.yaml");
+  const lockYaml = toolLockfilePath(root);
+  const treeYaml = path.join(root, "pnpm-lock.yaml");
+  if (!fs.existsSync(lockYaml) && lockYaml !== treeYaml && fs.existsSync(treeYaml)) {
+    console.error(`pnpm-purifier: ${lockYaml} does not exist yet, so the lock starts from the pnpm-lock.yaml of the tree`);
+    fs.mkdirSync(path.dirname(lockYaml), { recursive: true });
+    fs.copyFileSync(treeYaml, lockYaml);
+  }
   if (!fs.existsSync(lockYaml)) {
     console.error("pnpm-purifier: the project has no pnpm-lock.yaml, so pnpm resolves the dependencies and writes it");
-    const code = await run(pnpmCommand(root), ["install", "--lockfile-only"], { cwd: root });
-    if (code !== 0 || !fs.existsSync(lockYaml)) fail(`\`pnpm install --lockfile-only\` did not write pnpm-lock.yaml (exit ${code})`);
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "pnpm-purifier-resolve-"));
+    copyProject(root, path.join(scratch, "project"));
+    const code = await run(pnpmCommand(root), ["install", "--lockfile-only"], { cwd: path.join(scratch, "project") });
+    const written = path.join(scratch, "project", "pnpm-lock.yaml");
+    if (code !== 0 || !fs.existsSync(written)) fail(`\`pnpm install --lockfile-only\` did not write pnpm-lock.yaml (exit ${code})`);
+    fs.mkdirSync(path.dirname(lockYaml), { recursive: true });
+    fs.copyFileSync(written, lockYaml);
+    fs.rmSync(scratch, { recursive: true, force: true });
   }
   const pnpm = pnpmCommand(root);
   const pnpmVersion = capture(pnpm, ["--version"]).trim();
@@ -448,7 +489,7 @@ async function lock(root = process.cwd()) {
   const work = fs.mkdtempSync(path.join(os.tmpdir(), "pnpm-purifier-lock-"));
   const recordDir = path.join(work, "record");
   const project = path.join(recordDir, "project");
-  copyProject(root, project);
+  copyProjectWithLock(root, project);
   const recorded = new Map();
   const files = new Map();
   const metadata = new Map();
@@ -489,7 +530,7 @@ async function lock(root = process.cwd()) {
   for (let attempt = 1; ; attempt++) {
     const verifyDir = path.join(work, `verify-${attempt}`);
     const verifyProject = path.join(verifyDir, "project");
-    copyProject(root, verifyProject);
+    copyProjectWithLock(root, verifyProject);
     const misses = new Set();
     const verifier = await startRegistry({
       lookup: (p) => files.get(p) ?? gitFiles.get(p) ?? inline.get(p) ?? null,
@@ -580,7 +621,8 @@ async function execWithManifest(manifestFile, registriesFile, command, { project
   const fileOf = (p) => manifest[p] ?? null;
   const unpin = projectDir != null ? pinProjectRegistries(projectDir, base, registries) : () => {};
   const lockDir = projectDir ?? inPlace;
-  const rewrite = lockDir != null ? rewriteLockFile(lockDir, base, fileOf) : null;
+  const source = inPlace != null ? toolLockfileOption : null;
+  const rewrite = lockDir != null ? rewriteLockFile(lockDir, base, fileOf, source) : null;
   const restore = () => {
     unpin();
     if (rewrite) restoreLockFile(rewrite);
@@ -622,7 +664,7 @@ function readLock(root) {
   if (problems.length > 0) {
     fail(`${LOCK_FILE} is not a lockfile this version reads: ${problems.slice(0, 5).join("; ")}; run \`pnpm-purifier lock\` to write it again`);
   }
-  const yaml = path.join(root, "pnpm-lock.yaml");
+  const yaml = toolLockfilePath(root);
   if (!fs.existsSync(yaml) || hexDigest(fs.readFileSync(yaml)) !== lockfile.pnpmLockHash) {
     console.error(`pnpm-purifier: pnpm-lock.yaml changed since ${LOCK_FILE} was written, so pnpm runs online; run \`pnpm-purifier lock\` to lock it again`);
     return false;
@@ -644,10 +686,34 @@ function realize(root) {
 // Updates both lockfiles: pnpm re-resolves the dependencies (every one, or
 // the named packages) within the ranges of package.json and writes
 // pnpm-lock.yaml, and the lock run follows.
+// With the pnpm-lock.yaml of an external build, pnpm updates it in a copy
+// of the project, and the copy in the tree stays as it is.
 async function update(packages) {
   const root = process.cwd();
-  const code = await run(pnpmCommand(root), ["update", "--lockfile-only", ...packages], {});
-  if (code !== 0) process.exit(code);
+  if (toolLockfileOption == null) {
+    const code = await run(pnpmCommand(root), ["update", "--lockfile-only", ...packages], {});
+    if (code !== 0) process.exit(code);
+  } else {
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "pnpm-purifier-update-"));
+    const project = path.join(scratch, "project");
+    copyProject(root, project);
+    if (fs.existsSync(toolLockfileOption)) fs.copyFileSync(toolLockfileOption, path.join(project, "pnpm-lock.yaml"));
+    const code = await run(pnpmCommand(root), ["update", "--lockfile-only", ...packages], { cwd: project });
+    if (code !== 0) process.exit(code);
+    fs.mkdirSync(path.dirname(toolLockfileOption), { recursive: true });
+    fs.copyFileSync(path.join(project, "pnpm-lock.yaml"), toolLockfileOption);
+    // pnpm update also rewrites the ranges in the package.json of each
+    // project it updates; those files belong to the tree, as in an update
+    // without an external lockfile.
+    for (const dir of lockImporters(fs.readFileSync(toolLockfileOption, "utf8"))) {
+      const updated = path.join(project, dir, "package.json");
+      const original = path.join(root, dir, "package.json");
+      if (fs.existsSync(updated) && fs.readFileSync(updated, "utf8") !== fs.readFileSync(original, "utf8")) {
+        fs.copyFileSync(updated, original);
+      }
+    }
+    fs.rmSync(scratch, { recursive: true, force: true });
+  }
   await lock(root);
 }
 
@@ -674,7 +740,7 @@ async function interactive(args) {
   }
   if (!needsRegistry(args)) process.exit(await run(pnpmCommand(root), args, {}));
   const offline =
-    process.env.PNPM_PURIFIER !== "0" && fs.existsSync(path.join(root, "pnpm-lock.yaml")) && readLock(root);
+    process.env.PNPM_PURIFIER !== "0" && fs.existsSync(toolLockfilePath(root)) && readLock(root);
   if (!offline) process.exit(await run(pnpmCommand(root), args, {}));
   const { manifest, registriesFile } = realize(root);
   const { code, misses } = await execWithManifest(manifest, registriesFile, [pnpmCommand(root), ...args], { inPlace: root });
@@ -694,9 +760,10 @@ async function interactive(args) {
 // with the purifier lockfile that `--lockfile` names, or the project's own.
 function builderExpr(root) {
   const lockFile = lockfileOption != null ? ` lockFile = /. + ${JSON.stringify(lockfileOption)};` : "";
+  const pnpmLock = toolLockfileOption != null ? ` pnpmLock = /. + ${JSON.stringify(toolLockfileOption)};` : "";
   return (
     `((${nixpkgsExpr()}.callPackage ${JSON.stringify(path.join(libDir, "build-pnpm-project.nix"))} { purifier = ${libraryExpr()}; }) ` +
-    `{ src = /. + ${JSON.stringify(root)};${lockFile} })`
+    `{ src = /. + ${JSON.stringify(root)};${lockFile}${pnpmLock} })`
   );
 }
 
@@ -797,9 +864,10 @@ function proxyRestart() {
   process.exit(r.status ?? 1);
 }
 
-// `--lockfile PATH` names the purifier lockfile, for a project that keeps
-// it outside its source, as a packaging flake does. It comes before the
-// command, or after `lock`, `prefetch` or `publish`.
+// `--lockfile PATH` names the purifier lockfile, and `--tool-lockfile PATH`
+// the pnpm-lock.yaml, of an external build, which keeps them outside the
+// project, as a packaging flake does. They come before the command, or
+// after `lock`, `update`, `prefetch` or `publish`.
 function takeLockfileOption(args, anywhere) {
   const out = [];
   for (let i = 0; i < args.length; i++) {
@@ -809,6 +877,11 @@ function takeLockfileOption(args, anywhere) {
       lockfileOption = path.resolve(args[++i]);
     } else if ((anywhere || leading) && args[i].startsWith("--lockfile=")) {
       lockfileOption = path.resolve(args[i].slice("--lockfile=".length));
+    } else if ((anywhere || leading) && args[i] === "--tool-lockfile") {
+      if (i + 1 >= args.length) fail("--tool-lockfile needs a path");
+      toolLockfileOption = path.resolve(args[++i]);
+    } else if ((anywhere || leading) && args[i].startsWith("--tool-lockfile=")) {
+      toolLockfileOption = path.resolve(args[i].slice("--tool-lockfile=".length));
     } else out.push(args[i]);
   }
   return out;

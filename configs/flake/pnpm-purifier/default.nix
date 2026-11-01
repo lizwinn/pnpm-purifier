@@ -16,21 +16,26 @@
       inherit (libOverlays) default;
     };
 
-    # The packages are the `default` entry of this flake's package overlay
+    # The scope is the `default` entry of this flake's package overlay
     # registry (pkg-overlays/): the package set applies it by default, and
     # the flake exports it as `pkgOverlays` and as the plain
-    # `overlays.default`.
+    # `overlays.default`. The scope holds the builder, a function, so the
+    # flake publishes the derivations of the scope below in place of the
+    # whole scope.
     nixpkgs = {
-      packages.export.enabled = true;
+      packages.export.enabled = false;
     };
   };
 
-  # `nix run github:nix-purifiers/pnpm-purifier -- lock` runs the lock run in
-  # the current directory.
+  # The packages are the derivations of the scope, and `nix run
+  # github:nix-purifiers/pnpm-purifier -- lock` runs the lock run in the
+  # current directory.
   perSystem =
-    { config, ... }:
+    { pkgs, ... }:
     {
-      packages.default = config.packages.cli;
+      packages = lib.filterAttrs (_: lib.isDerivation) pkgs.pnpm-purifier // {
+        default = pkgs.pnpm-purifier.cli;
+      };
     };
 
   partitionedAttrs.checks = "checks";
@@ -58,7 +63,7 @@
             checks = import ../../../tests {
               inherit pkgs;
               inherit (self.packages.${system}) cli;
-              inherit (pkgs) buildPnpmProject;
+              inherit (pkgs.pnpm-purifier) buildPnpmProject;
               inherit (lib.pnpm-purifier) readLock;
               inherit (lib) purifier;
             };

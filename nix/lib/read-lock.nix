@@ -13,18 +13,17 @@
 # and, for the builder, `pnpm`: { version, registries }, the pnpm version
 # of the lock run (null when nothing names it) and the registries.
 #
-# pnpm-lock.yaml is the one in `src`. The purifier lockfile is optional: a
-# project whose pnpm-lock.yaml says everything the build needs has none,
-# and a packaging flake can keep it outside `src`.
+# Both lockfiles are in `src` by default. The purifier lockfile is
+# optional: a project whose pnpm-lock.yaml says everything the build needs
+# has none. An external build passes either lockfile from outside `src`.
 { purifier }:
 {
   src,
   lockFile ? src + "/pnpm-purifier.lock.json",
+  pnpmLock ? src + "/pnpm-lock.yaml",
 }:
 let
   inherit (builtins) pathExists readFile fromJSON;
-
-  pnpmLock = src + "/pnpm-lock.yaml";
 
   read = if pathExists lockFile then import ./lock.nix { inherit lockFile; } else null;
   lock = if read == null then null else read.lock;

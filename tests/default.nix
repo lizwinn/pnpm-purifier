@@ -8,7 +8,8 @@
 {
   pkgs,
   cli,
-  # `pkgs.buildPnpmProject`, which the package overlay of this flake adds.
+  # `pkgs.pnpm-purifier.buildPnpmProject`, which the package overlay of this
+  # flake adds.
   buildPnpmProject,
   # `lib.pnpm-purifier.readLock` of this flake.
   readLock,
@@ -64,6 +65,21 @@ let
       name = "without-purifier-lock";
       filter = path: _: baseNameOf path != "pnpm-purifier.lock.json";
     };
+
+  # A fixture without either lockfile, as a project whose external build
+  # keeps both outside the repository.
+  withoutLocks =
+    fixture:
+    builtins.path {
+      path = fixture;
+      name = "without-locks";
+      filter =
+        path: _:
+        !(builtins.elem (baseNameOf path) [
+          "pnpm-purifier.lock.json"
+          "pnpm-lock.yaml"
+        ]);
+    };
 in
 {
   inherit cli;
@@ -114,6 +130,8 @@ in
   # purifier lockfile kept outside it, as a packaging flake keeps one for a
   # project its author does not change: the sources fixture without its
   # purifier lockfile, which is given as `lockFile`.
+  # The same fixture also builds with pnpm-lock.yaml kept outside `src` and
+  # given as `pnpmLock`.
   conformance-external =
     let
       project =
@@ -121,9 +139,16 @@ in
           src = withoutPurifierLock ./fixtures/sources;
           lockFile = ./fixtures/sources/pnpm-purifier.lock.json;
         }).packages.sources;
+      withToolLock =
+        (build {
+          src = withoutLocks ./fixtures/sources;
+          lockFile = ./fixtures/sources/pnpm-purifier.lock.json;
+          pnpmLock = ./fixtures/sources/pnpm-lock.yaml;
+        }).packages.sources;
     in
     pkgs.runCommand "conformance-external" { } ''
       ${project.artifacts.bin.sources} | grep -Fx 'git: 3600000'
+      ${withToolLock.artifacts.bin.sources} | grep -Fx 'git: 3600000'
       touch $out
     '';
 

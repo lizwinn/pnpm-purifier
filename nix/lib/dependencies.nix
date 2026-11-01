@@ -11,9 +11,14 @@
 # its arguments. buildPnpmProject's `dependencies` is this, and the
 # interactive mode of `pnpm-purifier` builds it through the builder.
 {
-  pkgs,
   lib,
   callPackage,
+  fetchurl,
+  fetchgit,
+  runCommand,
+  unzip,
+  zstd,
+  python3,
   writeText,
   purifier,
   entries,
@@ -22,7 +27,20 @@
   fetchers ? { },
 }:
 let
-  fetch = purifier.fetchEntry ({ inherit pkgs; } // fetchers);
+  fetch = purifier.fetchEntry (
+    {
+      inherit
+        fetchurl
+        fetchgit
+        runCommand
+        unzip
+        zstd
+        python3
+        writeText
+        ;
+    }
+    // fetchers
+  );
   gitTarball = callPackage ./git-tarball.nix { };
   # The fields of an entry that the library fetches by; the platform
   # filters, the systems and the subdirectory stay with the purifier.
