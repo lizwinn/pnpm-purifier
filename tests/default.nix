@@ -35,7 +35,7 @@ in
   # The app runs from its deployed tree, with its workspace dependency and
   # its registry dependency resolved.
   workspace-app = pkgs.runCommand "workspace-app" { } ''
-    out_text=$(${lib.getExe app} Nix)
+    out_text=$(${app.artifacts.bin.example-app} Nix)
     echo "$out_text"
     grep -F "Hello, " <<<"$out_text"
     grep -F "Nix" <<<"$out_text"
@@ -54,7 +54,7 @@ in
       project = (buildPnpmProject { src = ./fixtures/sources; }).packages.sources;
     in
     pkgs.runCommand "sources" { } ''
-      out_text=$(${lib.getExe project})
+      out_text=$(${project.artifacts.bin.sources})
       echo "$out_text"
       grep -Fx 'github: a\.b' <<<"$out_text"
       grep -Fx 'git+https github: true' <<<"$out_text"
@@ -84,7 +84,7 @@ in
         while [ ! -s "$TMPDIR/port" ]; do sleep 0.1; done
         port=$(cat "$TMPDIR/port")
         echo "//127.0.0.1:$port/:_authToken=check" > "$HOME/.npmrc"
-        tarball=${greet.tarball}/example-greet-1.0.0.tgz
+        tarball=${greet.artifacts.tarball}
         pnpm publish "$tarball" --registry "http://127.0.0.1:$port/" --no-git-checks
         cmp "$tarball" "$TMPDIR/published.tgz"
         touch $out
@@ -92,7 +92,7 @@ in
 
   # A library that is not private gets the tarball `pnpm pack` makes.
   workspace-greet-tarball = pkgs.runCommand "workspace-greet-tarball" { } ''
-    tarball=${greet.tarball}/example-greet-1.0.0.tgz
+    tarball=${greet.artifacts.tarball}
     ${lib.getExe pkgs.gnutar} -xzf "$tarball" -O package/package.json | grep -F '"name": "@example/greet"'
     touch $out
   '';
@@ -123,6 +123,35 @@ in
     assert !(admits "x86_64-linux" { libc = [ "musl" ]; });
     assert admits "aarch64-darwin" { libc = [ "musl" ]; };
     pkgs.runCommand "platform-filters" { } "touch $out";
+
+  # The outputs of each project are known during evaluation, before a
+  # build: the bin wrappers by name, and the tarball of a project that is
+  # not private.
+  artifact-names =
+    assert builtins.attrNames app.artifacts == [ "bin" ];
+    assert builtins.attrNames app.artifacts.bin == [ "example-app" ];
+    assert lib.hasSuffix "/example-greet-1.0.0.tgz" greet.artifacts.tarball;
+    assert greet.artifacts.bin == { };
+    pkgs.runCommand "artifact-names" { } "touch $out";
+
+  # A lock with an inline entry (tests/fixtures/inline.lock.json), which
+  # holds registry metadata that pnpm reads offline when it prepares a git
+  # dependency. The manifest serves the entry from a file with its contents,
+  # named .json so that the registry serves it as JSON.
+  inline-entry =
+    let
+      dependencies = withOverlay.callPackage ../nix/lib/dependencies.nix {
+        lockFile = ./fixtures/inline.lock.json;
+      };
+    in
+    pkgs.runCommand "inline-entry" { nativeBuildInputs = [ pkgs.jq ]; } ''
+      file=$(jq -r '."https/registry.npmjs.org/picocolors"' ${dependencies})
+      case "$file" in *.json) ;; *) echo "$file is not named .json"; exit 1 ;; esac
+      jq -e '.versions."1.1.0".dist.tarball' "$file"
+      tarball=$(jq -r '."https/registry.npmjs.org/picocolors/-/picocolors-1.1.0.tgz"' ${dependencies})
+      ${lib.getExe pkgs.gnutar} -xzf "$tarball" -O package/package.json | jq -e '.version == "1.1.0"'
+      touch $out
+    '';
 
   # Evaluation fails for a lock that does not match pnpm-lock.yaml (here the
   # lock of the other fixture), and for a lock of another format version.

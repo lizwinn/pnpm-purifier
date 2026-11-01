@@ -66,6 +66,18 @@ where `hash` is what `nix-prefetch-git` reports. pnpm requires an
 integrity for each tarball, and the rewritten entry carries the integrity
 of the tarball served in that run.
 
+A git dependency with a `prepare` script, which pnpm 12 runs when the
+project's `allowBuilds` setting allows it, is prepared with that
+repository's package manager (npm when it names none). Before the script
+runs, the package manager installs the repository's devDependencies,
+which the project's `pnpm-lock.yaml` does not list, so it resolves them
+from registry metadata. The lock run's second install, from the recorded
+files alone, finds these metadata requests. The lock run then records each
+response as an inline entry `{ path, contents }`, cut down to the versions
+whose tarballs it recorded, and installs again. Offline, the local
+registry serves that metadata, so the dependency resolves to the same
+versions and its `prepare` script runs without the network.
+
 The lockfile records the hash of `pnpm-lock.yaml`. The Nix build fails
 during evaluation when `pnpm-lock.yaml` no longer matches, and interactive
 mode then runs pnpm online until the next `pnpm-purifier lock`.
@@ -114,6 +126,14 @@ Commit `pnpm-purifier.lock.json`. The flake's `overlays.default` adds
 }
 ```
 
+The builder knows each project and its outputs during evaluation, with no
+generated Nix files and no import from derivation. The projects are the
+importers of `pnpm-lock.yaml`, which the lockfile lists by name, and their
+outputs come from each project's `package.json`, which Nix reads as JSON.
+`packages.<name>.artifacts.bin.<bin>` is the wrapper of each `bin` entry,
+and `packages.<name>.artifacts.tarball` is the file that `pnpm pack`
+makes of a project that is not private.
+
 `nix/lib/build-pnpm-project.nix` documents the builder's arguments:
 `pnpm` (the default is nixpkgs' pnpm of the major version the lock was
 made with), `fetchurl` (for credentials or mirrors), `buildScript`,
@@ -143,11 +163,6 @@ turns interactive mode off.
 - A git dependency installs without its submodules. pnpm clones git
   dependencies without them, and the archives of GitHub, GitLab and
   Bitbucket hold none, so the lock records `submodules = false`.
-- Before it runs the `prepare` script of a git dependency, pnpm installs
-  that repository's devDependencies, which the project's `pnpm-lock.yaml`
-  does not list. Resolving them reads registry metadata, which cannot be
-  locked, so such a dependency cannot install offline. The lock run's
-  second install fails on it and names the requests it could not serve.
 - The Nix build fetches with Nix, which does not read `.npmrc`. A private
   registry needs a `fetchurl` that supplies credentials, such as nixpkgs'
   `fetchurl` with `netrcPhase`.

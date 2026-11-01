@@ -18,6 +18,9 @@
 #                      with a wrapper in bin/ for each of its `bin` entries;
 #                      a project that is not private also has a `tarball`
 #                      output holding what `pnpm pack` makes of it
+#   packages.<name>.artifacts
+#                      the files of those outputs by name, known during
+#                      evaluation: `bin.<bin>` and `tarball`
 {
   lib,
   stdenv,
@@ -116,6 +119,9 @@ let
         else
           manifest.bin or { };
       deployed = "$out/lib/node_modules/${project.name}";
+      # The file `pnpm pack` writes: the package name without its leading @
+      # and with - for /, then the version.
+      tarballName = "${derivationName project.name}-${manifest.version or "0"}.tgz";
       filter = lib.escapeShellArg project.name;
       filterWithDeps = lib.escapeShellArg "${project.name}...";
       # `pnpm deploy` copies a workspace project with its production
@@ -134,7 +140,7 @@ let
           '';
     in
     assert freshLock;
-    stdenv.mkDerivation {
+    stdenv.mkDerivation (finalAttrs: {
       pname = derivationName project.name;
       version = manifest.version or "0";
       src = filteredSrc;
@@ -185,7 +191,7 @@ let
         )}
         ${lib.optionalString (!isPrivate) ''
           mkdir -p "$tarball"
-          cp "$TMPDIR"/pack/*.tgz "$tarball/"
+          cp "$TMPDIR/pack/${tarballName}" "$tarball/${tarballName}"
         ''}
         runHook postInstall
       '';
@@ -193,12 +199,22 @@ let
       passthru = {
         inherit dependencies lock;
         pnpmProject = project;
+        # The outputs of the project, known from the lockfile and its
+        # package.json before the package is built: `bin.<name>`, the
+        # wrapper of each `bin` entry, and `tarball`, the file `pnpm pack`
+        # makes of a project that is not private.
+        artifacts = {
+          bin = builtins.mapAttrs (bin: _: "${finalAttrs.finalPackage}/bin/${bin}") bins;
+        }
+        // lib.optionalAttrs (!isPrivate) {
+          tarball = "${finalAttrs.finalPackage.tarball}/${tarballName}";
+        };
       };
       meta = {
         description = "${project.name}, built by pnpm-purifier";
       }
       // lib.optionalAttrs (bins != { }) { mainProgram = builtins.head (builtins.attrNames bins); };
-    };
+    });
 in
 {
   inherit lock dependencies;

@@ -17,7 +17,8 @@ lock
 
   # The store name of an artifact: its file name, made a valid store name.
   # A git dependency's path ends in package.tgz, so its name also takes the
-  # commit before it.
+  # commit before it. An inline entry is registry metadata, and its name
+  # ends in .json, which the local registry serves as JSON.
   artifactName =
     artifact:
     let
@@ -26,8 +27,13 @@ lock
     in
     if artifact ? git then
       storeName "${builtins.elemAt parts (n - 2)}-${builtins.elemAt parts (n - 1)}"
+    else if artifact ? contents then
+      storeName "${builtins.baseNameOf artifact.path}.json"
     else
       storeName (builtins.baseNameOf artifact.path);
+
+  # The directory of the repository that a git dependency names, or null.
+  gitSubdirectory = artifact: (lock.gitSubdirectories or { }).${artifact.path} or null;
 
   # The artifacts that apply to a Nix system: the lock holds the native
   # packages of every platform it covers, and a build on one system reads

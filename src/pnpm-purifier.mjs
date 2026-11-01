@@ -295,10 +295,52 @@ function isMetadata(contentType) {
   return /json/.test(contentType ?? "");
 }
 
+// A packument cut down to the versions whose tarballs the lock run
+// recorded. pnpm reads registry metadata only to resolve a dependency that
+// pnpm-lock.yaml does not list, such as a devDependency of a git
+// dependency it prepares. With only the recorded versions left, resolution
+// offline picks the versions it picked online. Returns null when none of
+// the packument's versions was recorded.
+function trimPackument(body, recordedPaths) {
+  let doc;
+  try {
+    doc = JSON.parse(body.toString("utf8"));
+  } catch {
+    return null;
+  }
+  const versions = {};
+  for (const [version, manifest] of Object.entries(doc.versions ?? {})) {
+    const tarball = manifest?.dist?.tarball;
+    if (tarball && recordedPaths.has(pathOfUrl(tarball))) versions[version] = manifest;
+  }
+  if (Object.keys(versions).length === 0) return null;
+  const pick = (object) => Object.fromEntries(Object.entries(object ?? {}).filter(([, v]) => versions[v] != null));
+  const trimmed = { name: doc.name, "dist-tags": pick(doc["dist-tags"]), versions };
+  if (doc.modified) trimmed.modified = doc.modified;
+  if (doc.time) {
+    trimmed.time = Object.fromEntries(Object.entries(doc.time).filter(([k]) => versions[k] != null || k === "created" || k === "modified"));
+  }
+  return JSON.stringify(trimmed);
+}
+
 // Starts the local registry. `lookup(relPath)` returns a file path or a
-// Buffer to serve, or null; `record(relPath)`, when given, answers the
-// paths that `lookup` does not know, by fetching them upstream.
-function startRegistry({ lookup, record = null, misses = new Set() }) {
+// Buffer to serve, or null; `record(relPath, accept)`, when given, answers
+// the paths that `lookup` does not know, by fetching them upstream with the
+// Accept header pnpm sent. Inline metadata is served as JSON: a Buffer
+// whose path is in `inlinePaths`, or a file whose name ends in .json, which
+// is how dependencies.nix names an inline entry.
+function startRegistry({ lookup, record = null, misses = new Set(), inlinePaths = new Set() }) {
+  let base = null;
+  // Registry metadata names each version's tarball by its upstream URL,
+  // and npm downloads from that URL, so served metadata names the same
+  // tarball on this registry.
+  const localizeMetadata = (data) => {
+    const doc = JSON.parse(data.toString("utf8"));
+    for (const manifest of Object.values(doc.versions ?? {})) {
+      if (manifest?.dist?.tarball) manifest.dist.tarball = base + pathOfUrl(manifest.dist.tarball);
+    }
+    return Buffer.from(JSON.stringify(doc));
+  };
   const server = http.createServer(async (req, res) => {
     const relPath = decodeURIComponent(req.url.split("?")[0]).replace(/^\/+/, "");
     try {
@@ -308,9 +350,17 @@ function startRegistry({ lookup, record = null, misses = new Set() }) {
       }
       const found = lookup(relPath);
       if (found == null && record) {
-        const { status, contentType, body } = await record(relPath);
+        const { status, contentType, body } = await record(relPath, req.headers.accept);
+        let served = body;
+        if (status === 200 && isMetadata(contentType)) {
+          try {
+            served = localizeMetadata(body);
+          } catch {
+            served = body;
+          }
+        }
         res.writeHead(status, { "content-type": contentType ?? "application/octet-stream" });
-        res.end(req.method === "HEAD" ? undefined : body);
+        res.end(req.method === "HEAD" ? undefined : served);
         return;
       }
       if (found == null) {
@@ -319,6 +369,13 @@ function startRegistry({ lookup, record = null, misses = new Set() }) {
         console.error(`pnpm-purifier: ${url} is not in ${LOCK_FILE}; run \`pnpm-purifier lock\``);
         res.writeHead(404, { "content-type": "application/json" });
         res.end(JSON.stringify({ error: `not locked: ${url}` }));
+        return;
+      }
+      const json = Buffer.isBuffer(found) ? inlinePaths.has(relPath) : found.endsWith(".json");
+      if (json) {
+        const body = localizeMetadata(Buffer.isBuffer(found) ? found : fs.readFileSync(found));
+        res.writeHead(200, { "content-type": "application/json", "content-length": body.length });
+        res.end(req.method === "HEAD" ? undefined : body);
         return;
       }
       const size = Buffer.isBuffer(found) ? found.length : fs.statSync(found).size;
@@ -333,7 +390,8 @@ function startRegistry({ lookup, record = null, misses = new Set() }) {
   });
   return new Promise((resolve) => {
     server.listen(0, "127.0.0.1", () => {
-      resolve({ server, base: `http://127.0.0.1:${server.address().port}/` });
+      base = `http://127.0.0.1:${server.address().port}/`;
+      resolve({ server, base });
     });
   });
 }
@@ -394,6 +452,9 @@ function isolatedEnv(dir) {
     XDG_DATA_HOME: path.join(dir, "home/.local/share"),
     XDG_STATE_HOME: path.join(dir, "home/.local/state"),
     XDG_RUNTIME_DIR: path.join(dir, "run"),
+    // pnpm prepares a git dependency without a `packageManager` field with
+    // npm, which keeps its own cache.
+    npm_config_cache: path.join(dir, "home/.npm"),
   };
   for (const d of Object.values(env)) fs.mkdirSync(d, { recursive: true });
   return env;
@@ -468,7 +529,6 @@ function lockGit(resolution) {
     // checkout keeps no .git.
     git: { url: repo, rev: commit, submodules: false, leaveDotGit: false },
     hash,
-    ...(subdirectory ? { subdirectory } : {}),
   };
   // The same derivation as the git entry's in dependencies.nix, named as
   // lock.nix's artifactName names it.
@@ -477,8 +537,8 @@ function lockGit(resolution) {
     `let pkgs = ${nixpkgsExpr()}; entry = builtins.fromJSON ${JSON.stringify(JSON.stringify(entry))}; in ` +
     `pkgs.callPackage ${JSON.stringify(path.join(libDir, "git-tarball.nix"))} { } ` +
     `{ name = ${lockNix}.artifactName entry; inherit (entry.git) url rev submodules leaveDotGit; ` +
-    `inherit (entry) hash; subdirectory = entry.subdirectory or null; }`;
-  return { entry, file: nixBuild(expr, ["--no-link"]) };
+    `inherit (entry) hash; subdirectory = ${subdirectory ? JSON.stringify(subdirectory) : "null"}; }`;
+  return { entry, subdirectory: subdirectory ?? null, file: nixBuild(expr, ["--no-link"]) };
 }
 
 async function installFrom(project, work, registries, server, gitFiles, extraEnv) {
@@ -510,33 +570,35 @@ async function lock() {
 
   const gitFiles = new Map();
   const gitEntries = [];
+  const gitSubdirectories = {};
   for (const r of outsideResolutions(fs.readFileSync(lockYaml, "utf8"))) {
     if (r.kind !== "git" || gitFiles.has(r.path)) continue;
-    const { entry, file } = lockGit(r);
+    const { entry, subdirectory, file } = lockGit(r);
     gitFiles.set(r.path, file);
     gitEntries.push(entry);
+    if (subdirectory != null) gitSubdirectories[r.path] = subdirectory;
   }
 
   // Pass 1 installs through the upstream registries and records every
-  // tarball pnpm downloads.
+  // tarball pnpm downloads, and the registry metadata it reads.
   const work = fs.mkdtempSync(path.join(os.tmpdir(), "pnpm-purifier-lock-"));
   const recordDir = path.join(work, "record");
   const project = path.join(recordDir, "project");
   copyProject(root, project);
   const recorded = new Map();
   const files = new Map();
-  const unlocked = new Set();
+  const metadata = new Map();
   const credentialsFor = registryCredentials(root);
   const recorder = await startRegistry({
     lookup: (p) => gitFiles.get(p) ?? null,
-    record: async (relPath) => {
+    record: async (relPath, accept) => {
       const url = urlOfPath(relPath);
       if (url == null) return { status: 404 };
-      const res = await fetch(url, { headers: credentialsFor(url) });
+      const res = await fetch(url, { headers: { ...credentialsFor(url), ...(accept ? { accept } : {}) } });
       const contentType = res.headers.get("content-type");
       const body = Buffer.from(await res.arrayBuffer());
       if (res.ok) {
-        if (isMetadata(contentType)) unlocked.add(url);
+        if (isMetadata(contentType)) metadata.set(relPath, body);
         else {
           files.set(relPath, body);
           // pnpm names one URL per file, and the lock keeps no others.
@@ -555,21 +617,44 @@ async function lock() {
   recorder.server.close();
 
   // Pass 2 installs a fresh copy from what pass 1 recorded alone, as the
-  // Nix build does, which shows that the lock holds every download.
-  const verifyDir = path.join(work, "verify");
-  const verifyProject = path.join(verifyDir, "project");
-  copyProject(root, verifyProject);
-  const misses = new Set();
-  const verifier = await startRegistry({ lookup: (p) => files.get(p) ?? gitFiles.get(p) ?? null, misses });
-  console.error("pnpm-purifier: installing again from the recorded downloads alone");
-  const second = await installFrom(verifyProject, verifyDir, registries, verifier, gitFiles, OFFLINE_ENV);
-  verifier.server.close();
-  if (second.code !== 0) {
-    fail(
-      `the install from the recorded downloads failed (exit ${second.code})` +
-        (misses.size > 0 ? `; pnpm requested files that the lock run could not lock:\n  ${[...misses].join("\n  ")}` : "") +
-        `\nThe lock run's copies of the project are in ${work}`,
-    );
+  // Nix build does, which shows that the lock holds every download. pnpm
+  // reads registry metadata offline only to resolve what pnpm-lock.yaml
+  // does not list, such as the devDependencies of a git dependency it
+  // prepares. Each metadata request of a failed pass becomes an inline
+  // entry, trimmed to the recorded versions, and the pass runs again.
+  const inline = new Map();
+  for (let attempt = 1; ; attempt++) {
+    const verifyDir = path.join(work, `verify-${attempt}`);
+    const verifyProject = path.join(verifyDir, "project");
+    copyProject(root, verifyProject);
+    const misses = new Set();
+    const verifier = await startRegistry({
+      lookup: (p) => files.get(p) ?? gitFiles.get(p) ?? inline.get(p) ?? null,
+      misses,
+      inlinePaths: new Set(inline.keys()),
+    });
+    console.error("pnpm-purifier: installing again from the recorded downloads alone");
+    const second = await installFrom(verifyProject, verifyDir, registries, verifier, gitFiles, OFFLINE_ENV);
+    verifier.server.close();
+    if (second.code === 0) break;
+    const added = [];
+    for (const url of misses) {
+      const relPath = pathOfUrl(url);
+      const body = metadata.get(relPath);
+      const trimmed = body && !inline.has(relPath) ? trimPackument(body, new Set(files.keys())) : null;
+      if (trimmed != null) {
+        inline.set(relPath, Buffer.from(trimmed));
+        added.push(url);
+      }
+    }
+    if (added.length === 0) {
+      fail(
+        `the install from the recorded downloads failed (exit ${second.code})` +
+          (misses.size > 0 ? `; pnpm requested files that the lock run could not lock:\n  ${[...misses].join("\n  ")}` : "") +
+          `\nThe lock run's copies of the project are in ${work}`,
+      );
+    }
+    console.error(`pnpm-purifier: locking the registry metadata pnpm read offline:\n  ${added.join("\n  ")}`);
   }
 
   const projects = lockImporters(fs.readFileSync(lockYaml, "utf8"))
@@ -581,11 +666,8 @@ async function lock() {
     .filter((p) => p != null)
     .sort((a, b) => a.path.localeCompare(b.path));
 
-  for (const url of unlocked) {
-    console.error(`pnpm-purifier: not locked, registry metadata changes over time: ${url}`);
-  }
-
   const byPath = (a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+  const inlineEntries = [...inline].map(([p, body]) => ({ path: p, contents: body.toString("utf8") }));
   const lockfile = {
     version: LOCK_VERSION,
     pnpmVersion,
@@ -596,7 +678,10 @@ async function lock() {
     pnpmLockHash: hexDigest(fs.readFileSync(lockYaml)),
     platforms: LOCK_PLATFORMS,
     projects,
-    artifacts: [...recorded.values(), ...gitEntries].sort(byPath),
+    // For a git dependency that names a directory of its repository
+    // (`#path:` in pnpm), that directory, by the path of its git entry.
+    gitSubdirectories,
+    artifacts: [...recorded.values(), ...gitEntries, ...inlineEntries].sort(byPath),
   };
   fs.writeFileSync(path.join(root, LOCK_FILE), JSON.stringify(lockfile, null, 2) + "\n");
   fs.rmSync(work, { recursive: true, force: true });

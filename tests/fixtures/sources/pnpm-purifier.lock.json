@@ -28,6 +28,7 @@
       "path": "."
     }
   ],
+  "gitSubdirectories": {},
   "artifacts": [
     {
       "path": "git/salsa.debian.org/js-team/node-ms/3171b261a43eeca83fbd2d6711c0f74e665584d1/package.tgz",

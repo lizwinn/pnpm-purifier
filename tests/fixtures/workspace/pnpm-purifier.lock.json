@@ -36,6 +36,7 @@
       "path": "packages/greet"
     }
   ],
+  "gitSubdirectories": {},
   "artifacts": [
     {
       "path": "https/registry.npmjs.org/@esbuild/darwin-arm64/-/darwin-arm64-0.25.12.tgz",
