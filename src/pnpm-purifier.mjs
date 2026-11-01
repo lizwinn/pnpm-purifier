@@ -733,6 +733,10 @@ async function online(root, args) {
 
 async function interactive(args) {
   const root = process.cwd();
+  if (process.env.PNPM_PURIFIER === "0" || !fs.existsSync(toolLockfilePath(root)) || !fs.existsSync(lockfilePath(root))) {
+    if (process.env.PNPM_PURIFIER !== "0") console.error("pnpm-purifier: warning: no complete pnpm purifier lockfiles found; running pnpm impurely. Run `pnpm-purifier lock` to use Nix-resolved dependencies.");
+    process.exit(await run(pnpmCommand(root), args, {}));
+  }
   if (args[0] === "--online") process.exit(await online(root, args.slice(1)));
   if (isResolving(args)) {
     console.error(`pnpm-purifier: \`pnpm ${args.join(" ")}\` resolves versions from registry metadata, so it runs online`);

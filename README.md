@@ -1,17 +1,11 @@
 # pnpm-purifier
 
-A command-line program and Nix library that let Nix build a pnpm project in
-its sandbox. Nix reads the downloads of a build from `pnpm-lock.yaml`,
-which records each package with its integrity hash, so most projects need
-nothing else. pnpm-purifier writes a second lockfile,
-`pnpm-purifier.lock.json`, beside `pnpm-lock.yaml` only for what that file
-cannot record: the checkout hash of a git dependency, the files and
-registry metadata that the prepare step of a git dependency reads, the
-registries when the user config sets them, and the pnpm version when
-`package.json` names none. The project needs no generated Nix files. It is
-one of the [nix-purifiers](https://nix-purifiers.github.io), and it meets
-the
-[purifier contract](https://github.com/nix-purifiers/purifier/blob/main/CONTRACT.md).
+pnpm-purifier keeps pnpm's development workflow on locked,
+Nix-resolved dependencies. Use the normal build and test commands in your
+working tree; building the project itself in the Nix sandbox is an
+optional next step.
+
+It follows the [purifier contract](https://github.com/nix-purifiers/purifier/blob/main/CONTRACT.md).
 
 pnpm reads every package through a registry on the loopback interface that
 pnpm-purifier runs. During the lock run the registry forwards each request
@@ -24,38 +18,79 @@ registry mirrors upstream URLs, so
 `https/registry.npmjs.org/ms/-/ms-2.1.3.tgz` on it, which is also the
 file's `path` in the lock.
 
+## Installation
+
+Install the integration into your Nix profile once:
+
+```sh
+nix profile install 'github:nix-purifiers/pnpm-purifier'
+```
+
+The required wrapper is `pnpm-purifier`; pass your usual tool
+arguments after it. With no purifier lockfile, it warns on standard error
+and runs the ordinary tool with impure resolution.
+
+You can keep the usual command spelling with `alias pnpm=pnpm-purifier`
+in your shell configuration.
+
+`nix shell` makes an integration available temporarily instead of installing
+it. Keep using the activation steps below where a project environment or
+prefetched cache is required.
+
 ## Quickstart
 
-Run the lock run in the project root:
+Install Nix, then run the following from your existing project's root.
+The setup prepares the locked dependencies and the integration that
+pnpm's normal commands use:
 
 ```zsh
-nix run github:nix-purifiers/pnpm-purifier -- lock
+nix shell github:nix-purifiers/pnpm-purifier
+alias pnpm=pnpm-purifier
+pnpm-purifier lock
+pnpm install
+pnpm run build
+pnpm test
 ```
 
-The lock run keeps the resolution in `pnpm-lock.yaml`, and it writes that
-file first when the project has none. It then writes
-`pnpm-purifier.lock.json` when the project needs one, and otherwise it says
-that the project needs none. Commit both lockfiles. Then build the project
-from its directory, with no Nix file added to it:
+Commit the lockfiles that the lock command writes, including the build
+tool's own lockfile when it has one. Keep using the project's usual build,
+test and editor commands with this setup. Nix provides the locked
+dependencies; the development commands above run outside the Nix sandbox.
+No project Nix files are needed for this workflow.
 
-```zsh
-nix build --impure --expr '
-  let
-    purifier = builtins.getFlake "github:nix-purifiers/pnpm-purifier";
-    pkgs = import purifier.inputs.nixpkgs {
-      system = builtins.currentSystem;
-      overlays = [ purifier.overlays.default ];
-    };
-  in
-  (pkgs.pnpm-purifier.buildPnpmProject { src = ./.; }).packages."@example/app"'
-```
+Sandboxed builds of the whole project are an optional
+[next step](#building-the-project-with-nix).
 
-This uses the purifier's pinned nixpkgs, matching the lock command above.
-To build with ambient `<nixpkgs>` from your Nix search path instead,
-replace `import purifier.inputs.nixpkgs` with `import <nixpkgs>`.
-Both forms need no Nix files in your project. The build tool and language
-versions must match the lockfile; with ambient nixpkgs, lock with the
-purifier from that package set or pass a compatible toolchain to the builder.
+## Development loop
+
+`pnpm-purifier` takes pnpm's arguments, so it can stand in for `pnpm`, for
+example through `alias pnpm=pnpm-purifier`. It runs the pnpm of the major
+version that the project's `packageManager` field names, from the flake's
+nixpkgs (pnpm 10, 11 or 12), and keeps pnpm on that version.
+`PNPM_PURIFIER_PNPM` names another pnpm.
+
+| Command | What runs |
+|---|---|
+| `pnpm-purifier install` | pnpm installs offline, from the locked files, which Nix fetches |
+| `pnpm-purifier run build`, `test`, `exec tsc`, a script name | pnpm itself, since these download nothing |
+| `pnpm-purifier add ms`, `remove ms`, `install ms` | pnpm online, since resolving versions reads registry metadata, then `pnpm-purifier lock` when `pnpm-lock.yaml` changed |
+| `pnpm-purifier --online <arguments>` | pnpm online, then `pnpm-purifier lock` when `pnpm-lock.yaml` changed |
+| `pnpm-purifier lock` | the lock run, which keeps the resolution in `pnpm-lock.yaml` |
+| `pnpm-purifier update [<package>...]` | `pnpm update --lockfile-only` for every package or the named ones, then the lock run, which updates both lockfiles |
+| `pnpm-purifier prefetch` | see Working offline |
+| `pnpm-purifier publish [pnpm publish arguments]` | Nix builds the `release`, and `pnpm publish` uploads each of its tarballs |
+
+`PNPM_PURIFIER=0` makes `pnpm-purifier` run pnpm as it is. A lock run
+installs twice, once online, recording, and once offline from what it
+recorded.
+
+## Building the project with Nix
+
+Once the native development workflow is working, you can also build and
+test the whole project in the Nix sandbox. For this step, keep a flake or
+another Nix build definition in the project's repository, or maintain an
+external packaging repository that points at its sources and lockfiles.
+The builder consumes the same lockfiles as the development workflow.
 
 The flake's `overlays.default` adds one attribute to a package set: the
 scope `pnpm-purifier`, which holds the builder `buildPnpmProject` and the
@@ -124,28 +159,29 @@ systems need it), `outputs` (the workspace projects by name) and
 that fixes it). The builder passes it to the library's `checkLock` and
 takes the downloads of its system from `entriesFor`.
 
-## Development loop
+### One-off builds without a project Nix file
 
-`pnpm-purifier` takes pnpm's arguments, so it can stand in for `pnpm`, for
-example through `alias pnpm=pnpm-purifier`. It runs the pnpm of the major
-version that the project's `packageManager` field names, from the flake's
-nixpkgs (pnpm 10, 11 or 12), and keeps pnpm on that version.
-`PNPM_PURIFIER_PNPM` names another pnpm.
+For an ad hoc build, the builder can also be evaluated directly from the
+project root. Replace the example package name with one from your project:
 
-| Command | What runs |
-|---|---|
-| `pnpm-purifier install` | pnpm installs offline, from the locked files, which Nix fetches |
-| `pnpm-purifier run build`, `test`, `exec tsc`, a script name | pnpm itself, since these download nothing |
-| `pnpm-purifier add ms`, `remove ms`, `install ms` | pnpm online, since resolving versions reads registry metadata, then `pnpm-purifier lock` when `pnpm-lock.yaml` changed |
-| `pnpm-purifier --online <arguments>` | pnpm online, then `pnpm-purifier lock` when `pnpm-lock.yaml` changed |
-| `pnpm-purifier lock` | the lock run, which keeps the resolution in `pnpm-lock.yaml` |
-| `pnpm-purifier update [<package>...]` | `pnpm update --lockfile-only` for every package or the named ones, then the lock run, which updates both lockfiles |
-| `pnpm-purifier prefetch` | see Working offline |
-| `pnpm-purifier publish [pnpm publish arguments]` | Nix builds the `release`, and `pnpm publish` uploads each of its tarballs |
+```zsh
+nix build --impure --expr '
+  let
+    purifier = builtins.getFlake "github:nix-purifiers/pnpm-purifier";
+    pkgs = import purifier.inputs.nixpkgs {
+      system = builtins.currentSystem;
+      overlays = [ purifier.overlays.default ];
+    };
+  in
+  (pkgs.pnpm-purifier.buildPnpmProject { src = ./.; }).packages."@example/app"'
+```
 
-`PNPM_PURIFIER=0` makes `pnpm-purifier` run pnpm as it is. A lock run
-installs twice, once online, recording, and once offline from what it
-recorded.
+This uses the purifier's pinned nixpkgs, matching the lock command above.
+To build with ambient `<nixpkgs>` from your Nix search path instead,
+replace `import purifier.inputs.nixpkgs` with `import <nixpkgs>`.
+Both forms need no Nix files in your project. The build tool and language
+versions must match the lockfile; with ambient nixpkgs, lock with the
+purifier from that package set or pass a compatible toolchain to the builder.
 
 ## Working offline
 
@@ -252,6 +288,11 @@ These limits affect a project:
   credentials of `.npmrc`.
 
 ## Examples
+
+For day-to-day work on these projects, use the native-tool setup and
+commands in [Quickstart](#quickstart) and [Development loop](#development-loop).
+The Nix expressions below show optional sandboxed packaging of those
+projects.
 
 [giget](https://github.com/unjs/giget) is a command-line tool that
 downloads templates from git repositories. It is a pnpm project with a

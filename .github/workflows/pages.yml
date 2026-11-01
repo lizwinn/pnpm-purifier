@@ -1,0 +1,91 @@
+# SPDX-License-Identifier: MIT
+# The project site documents the native development workflow. Native package
+# publication, when provided, is documented separately from this site build.
+name: pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - README.md
+      - .github/workflows/pages.yml
+  pull_request:
+    paths:
+      - README.md
+      - .github/workflows/pages.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pages: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Configure Pages
+        id: pages
+        uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
+      - name: Prepare the project documentation
+        run: |
+          python3 - <<'PYTHON'
+          import json
+          import os
+          import pathlib
+          import re
+
+          repository = os.environ["GITHUB_REPOSITORY"]
+          source = pathlib.Path(".pages-source")
+          source.mkdir()
+          text = pathlib.Path("README.md").read_text()
+          # Source-file links belong on GitHub; in-page and external links stay.
+          text = re.sub(
+              r"(?<!!)\]\((?!https?://|mailto:|#|/)([^)]+)\)",
+              lambda match: "](" + "https://github.com/" + repository
+              + "/blob/main/" + match.group(1) + ")",
+              text,
+          )
+          (source / "index.md").write_text("---\nlayout: default\n---\n\n" + text)
+          (source / "_config.yml").write_text(json.dumps({
+              "title": repository.split("/")[1],
+              "description": "Native development with locked, Nix-resolved dependencies",
+              "theme": "jekyll-theme-minimal",
+              "repository": repository,
+              "url": "https://nix-purifiers.github.io",
+              "baseurl": "/" + repository.split("/")[1],
+          }))
+          PYTHON
+      - name: Build the project site
+        uses: actions/jekyll-build-pages@44a6e6beabd48582f863aeeb6cb2151cc1716697 # v1
+        with:
+          source: .pages-source
+          destination: .pages-site
+          future: true
+          build_revision: ${{ github.sha }}
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5
+        with:
+          path: .pages-site
+
+  deploy:
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy the project site
+        id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5
