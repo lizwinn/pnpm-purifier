@@ -177,12 +177,12 @@ let
         # project's own scripts before anything runs, and the scripts of
         # the installed packages after the install.
         patchShebangs --build .
-        node ${cli} exec --manifest ${dependencies} --lock ${lockFile} --pin-project . -- \
+        node ${cli} registry-exec --manifest ${dependencies} --lock ${lockFile} --pin-project . -- \
           pnpm install --frozen-lockfile --store-dir "$TMPDIR/store" --filter ${filterWithDeps}
         for modules in $(find . -name node_modules -type d -prune); do
           patchShebangs --build "$modules"
         done
-        node ${cli} exec --manifest ${dependencies} --lock ${lockFile} --pin-project . -- \
+        node ${cli} registry-exec --manifest ${dependencies} --lock ${lockFile} --pin-project . -- \
           bash -euo pipefail -c '
             pnpm --filter ${filterWithDeps} run --if-present ${lib.escapeShellArg buildScript}
             ${lib.optionalString doCheck "pnpm --filter ${filter} run --if-present test"}

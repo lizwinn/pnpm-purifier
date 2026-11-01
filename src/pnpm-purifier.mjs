@@ -10,7 +10,7 @@
 //                                    builds the tarball of workspace project
 //                                    NAME with Nix and runs `pnpm publish` on
 //                                    it, with ARGS
-//   pnpm-purifier exec --manifest M --lock L [--pin-project DIR] -- CMD...
+//   pnpm-purifier registry-exec --manifest M --lock L [--pin-project DIR] -- CMD...
 //                                    runs CMD with pnpm pointed at a registry
 //                                    that serves only the files in M (the Nix
 //                                    build uses this)
@@ -226,16 +226,32 @@ function startRegistry({ lookup, record = null, misses = new Set(), quiet = fals
 
 // --- Processes --------------------------------------------------------------
 
-function run(command, args, options) {
+// The settings that keep pnpm on the version that runs. A project whose
+// `packageManager` field names another version (pnpm@11.15.1, run by
+// nixpkgs' pnpm 11.27.0) otherwise makes pnpm download that version, which
+// is not the pnpm the Nix build runs. pnpm 10 reads the first, pnpm 11 and
+// 12 the second.
+const PIN_ENV = {
+  npm_config_manage_package_manager_versions: "false",
+  pnpm_config_pm_on_fail: "ignore",
+};
+
+// The environment of every process the command starts: `env` (the
+// command's own by default), with the settings of PIN_ENV.
+function childEnv(env = process.env) {
+  return { ...env, ...PIN_ENV };
+}
+
+function run(command, args, options = {}) {
   return new Promise((resolve) => {
-    const child = spawn(command, args, { stdio: "inherit", ...options });
+    const child = spawn(command, args, { stdio: "inherit", ...options, env: childEnv(options.env) });
     child.on("error", (err) => fail(`cannot run ${command}: ${err.message}`));
     child.on("exit", (code, signal) => resolve(signal ? 128 + (os.constants.signals[signal] ?? 0) : code));
   });
 }
 
-function capture(command, args, options) {
-  const r = spawnSync(command, args, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, ...options });
+function capture(command, args, options = {}) {
+  const r = spawnSync(command, args, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, ...options, env: childEnv(options.env) });
   if (r.error) fail(`cannot run ${command}: ${r.error.message}`);
   if (r.status !== 0) fail(`${command} ${args.join(" ")} failed:\n${r.stderr ?? ""}`);
   return r.stdout;
@@ -667,11 +683,11 @@ function parseExec(args) {
     else if (args[i] === "--lock") lockFile = args[++i];
     else if (args[i] === "--pin-project") projectDir = args[++i];
     else if (args[i] === "--") break;
-    else fail(`exec: unknown option ${args[i]}`);
+    else fail(`registry-exec: unknown option ${args[i]}`);
   }
   const command = args.slice(i + 1);
   if (manifest == null || lockFile == null || command.length === 0) {
-    fail("usage: pnpm-purifier exec --manifest FILE --lock FILE [--pin-project DIR] -- COMMAND...");
+    fail("usage: pnpm-purifier registry-exec --manifest FILE --lock FILE [--pin-project DIR] -- COMMAND...");
   }
   return { manifest, lockFile, projectDir, command };
 }
@@ -688,8 +704,10 @@ function proxyRestart() {
   process.exit(r.status ?? 1);
 }
 
+// The subcommands of pnpm-purifier have names that pnpm has no command
+// for, so every other argument list reaches pnpm.
 const [command, ...rest] = process.argv.slice(2);
-if (command === "exec") {
+if (command === "registry-exec") {
   const { manifest, lockFile, projectDir, command: cmd } = parseExec(rest);
   const { code, misses } = await execWithManifest(manifest, lockFile, cmd, { projectDir });
   if (code !== 0 && misses.size > 0) {

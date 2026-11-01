@@ -41,3 +41,11 @@ jobs:
             (cd "$work/project" && nix run "$GITHUB_WORKSPACE" -- lock)
             diff -u "tests/fixtures/$fixture/pnpm-purifier.lock.json" "$work/project/pnpm-purifier.lock.json"
           done
+      - name: Relock the real-world project and compare
+        run: |
+          set -euo pipefail
+          work=$(mktemp -d)
+          git clone --quiet https://github.com/unjs/giget "$work/project"
+          git -C "$work/project" checkout --quiet f1dad453055b97a81d5227edce7262c8dcaf53d2
+          (cd "$work/project" && nix run "$GITHUB_WORKSPACE" -- lock)
+          diff -u tests/real-world/giget.lock.json "$work/project/pnpm-purifier.lock.json"

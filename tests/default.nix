@@ -83,6 +83,33 @@ in
       touch $out
     '';
 
+  # A real project, pinned: unjs/giget, a command-line tool on pnpm 11 with
+  # a few hundred locked packages, at commit f1dad45. Its source is fetched
+  # during evaluation by its hash, and its lockfile is
+  # tests/real-world/giget.lock.json, which `pnpm-purifier lock` wrote in a
+  # checkout of that commit. The build runs its obuild build in the
+  # sandbox, and the check runs the command it builds.
+  real-world =
+    let
+      src = builtins.fetchTree {
+        type = "github";
+        owner = "unjs";
+        repo = "giget";
+        rev = "f1dad453055b97a81d5227edce7262c8dcaf53d2";
+        narHash = "sha256-hDKGYxozIV8UQTbPpJVs6jrDiPmcHK2EWRZ7WNfSYQ0=";
+      };
+      project =
+        (buildPnpmProject {
+          inherit src;
+          lockFile = ./real-world/giget.lock.json;
+        }).packages.giget;
+    in
+    pkgs.runCommand "real-world" { } ''
+      ${project.artifacts.bin.giget} --help | tee help
+      grep -F 'giget v3.3.1' help
+      touch $out
+    '';
+
   # `pnpm-purifier publish` publishes the tarball output of a project with
   # `pnpm publish`. The check publishes greet's tarball to a registry on
   # the loopback interface (tests/fake-registry.mjs) and compares what the

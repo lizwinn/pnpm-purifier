@@ -183,6 +183,26 @@ A lock run installs twice: once online, recording, and once offline from
 what it recorded. On the fixtures it takes a few seconds; most of the time
 of a larger project goes to the first, online install.
 
+### Projects tried
+
+[unjs/giget](https://github.com/unjs/giget) at commit
+`f1dad453055b97a81d5227edce7262c8dcaf53d2`, a command-line tool on pnpm 11
+whose lock holds 324 files. Following the quickstart above word for word,
+`pnpm-purifier lock` took 6 seconds. With the lock, `pnpm-purifier install`
+installed offline, `pnpm-purifier run build` built it with obuild,
+`pnpm-purifier run test:types` type-checked it with `tsc`, as the editor's
+TypeScript server does, and `pnpm-purifier exec vitest run` passed its 58
+tests. `pnpm-purifier add kleur@4.1.5` ran online and relocked in 8
+seconds. The flake's `real-world` check builds giget at that commit in the
+sandbox from `tests/real-world/giget.lock.json`, and CI relocks it and
+compares the result byte for byte.
+
+Trying giget changed two things. The project pins pnpm 11.15.1 and the
+flake's pnpm 11 is 11.27.0, so pnpm tried to download 11.15.1 before the
+lock run; every pnpm that pnpm-purifier starts now stays on the version
+that runs. And pnpm-purifier's own `exec` subcommand hid `pnpm exec`; it is
+now `registry-exec`.
+
 ## Limitations
 
 - Registry metadata is never locked, because a registry changes it each
