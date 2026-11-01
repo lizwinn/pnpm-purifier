@@ -40,6 +40,7 @@
     {
       "path": "https/registry.npmjs.org/@esbuild/darwin-arm64/-/darwin-arm64-0.25.12.tgz",
       "url": "https://registry.npmjs.org/@esbuild/darwin-arm64/-/darwin-arm64-0.25.12.tgz",
+      "mirrors": [],
       "hash": "sha256-Lg0BH4UuRQRspcEH21TPxWM493rKSdInoGNpbZWEUdc=",
       "os": [
         "darwin"
@@ -51,6 +52,7 @@
     {
       "path": "https/registry.npmjs.org/@esbuild/darwin-x64/-/darwin-x64-0.25.12.tgz",
       "url": "https://registry.npmjs.org/@esbuild/darwin-x64/-/darwin-x64-0.25.12.tgz",
+      "mirrors": [],
       "hash": "sha256-v1bN97MwqGBTle4T3oBceExzRtCALHzO2EkLS/rCKRo=",
       "os": [
         "darwin"
@@ -62,6 +64,7 @@
     {
       "path": "https/registry.npmjs.org/@esbuild/linux-arm64/-/linux-arm64-0.25.12.tgz",
       "url": "https://registry.npmjs.org/@esbuild/linux-arm64/-/linux-arm64-0.25.12.tgz",
+      "mirrors": [],
       "hash": "sha256-1eAdIQ4CaCPVWeK4JVTNzatv2HxKV7UZs5LvGDwfh/0=",
       "os": [
         "linux"
@@ -73,6 +76,7 @@
     {
       "path": "https/registry.npmjs.org/@esbuild/linux-x64/-/linux-x64-0.25.12.tgz",
       "url": "https://registry.npmjs.org/@esbuild/linux-x64/-/linux-x64-0.25.12.tgz",
+      "mirrors": [],
       "hash": "sha256-9+/BJ2WKEI3NqdQhCwGATuj11rOsvW1j8gqlHTtQvV8=",
       "os": [
         "linux"
@@ -84,16 +88,19 @@
     {
       "path": "https/registry.npmjs.org/esbuild/-/esbuild-0.25.12.tgz",
       "url": "https://registry.npmjs.org/esbuild/-/esbuild-0.25.12.tgz",
+      "mirrors": [],
       "hash": "sha256-InWEFFgp5cR4JzSz+3uRtJxqoSh21s8HDmo9nU3lQ/k="
     },
     {
       "path": "https/registry.npmjs.org/ms/-/ms-2.1.3.tgz",
       "url": "https://registry.npmjs.org/ms/-/ms-2.1.3.tgz",
+      "mirrors": [],
       "hash": "sha256-9mFuFeUw7VUvnaotPOcZY5R8a8fJjJtk/T5nP9AmIsY="
     },
     {
       "path": "https/registry.npmjs.org/picocolors/-/picocolors-1.1.1.tgz",
       "url": "https://registry.npmjs.org/picocolors/-/picocolors-1.1.1.tgz",
+      "mirrors": [],
       "hash": "sha256-067bKAeWe36zf9EbA7fjcB5yWvecZQ0IEv9yE/j4gtk="
     }
   ]

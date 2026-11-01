@@ -6,37 +6,69 @@ in a lockfile, `pnpm-purifier.lock.json`, beside `pnpm-lock.yaml`. Nix
 builds the project from that lockfile, so the project needs no generated
 Nix files. It is one of the [nix-purifiers](https://nix-purifiers.github.io).
 
-- **A lockfile.** `pnpm-purifier lock` installs the project once from
-  `pnpm-lock.yaml`, with an empty store, and records every package tarball
-  pnpm downloads by URL and SHA-256. It installs the platform-specific
-  packages of Linux and macOS on x86-64 and ARM64 too, so one lockfile
-  serves each of those systems. The lockfile also names the pnpm version,
-  the registries and the workspace projects.
+pnpm-purifier follows the design of sbt-nix-backend
+([nix-purifiers/sbt-purifier](https://github.com/nix-purifiers/sbt-purifier)):
+the tool still plans the build, a lock run records every download by URL
+and hash, and Nix fetches those files and runs the tool in its sandbox,
+offline. sbt-nix-backend in turn takes its model from nixcloud's
+[cargo (libnix)](https://github.com/nixcloud/cargo).
+
+- **A lockfile.** `pnpm-purifier lock` installs the project from
+  `pnpm-lock.yaml` with an empty store and records every file pnpm
+  downloads. It also installs the platform-specific packages of Linux and
+  macOS on x86-64 and ARM64, so one lockfile serves each of those systems.
+  A second install then runs from the recorded files alone, which shows
+  that the lockfile holds everything the install needs.
 - **Sandboxed builds.** `buildPnpmProject`, which the flake's overlay adds
-  to a package set, builds each workspace project: it installs from the
-  locked tarballs, runs the project's `build` script, and deploys the
-  project with its production dependencies. Each `bin` entry gets a
-  wrapper, and a project that is not private also gets the tarball that
-  `pnpm pack` makes.
-- **Interactive pnpm on the locked downloads.** `pnpm-purifier <pnpm
-  arguments>` runs pnpm with the locked tarballs, which Nix fetches,
-  and no network.
+  to a package set, builds each workspace project in the Nix sandbox: it
+  installs from the locked files, runs the project's `build` script, and
+  copies the project with its production dependencies. Each `bin` entry
+  gets a wrapper, and a project that is not private also gets the tarball
+  that `pnpm pack` makes.
+- **Interactive pnpm on the locked files.** `pnpm-purifier <pnpm
+  arguments>` runs pnpm with the locked files, which Nix fetches, and no
+  network.
+- **Publishing what Nix built.** `pnpm-purifier publish <project>` builds
+  the project's tarball in the Nix sandbox and runs `pnpm publish` on that
+  file, so nothing that is published was packed outside the sandbox.
 
 ## How it works
 
 pnpm reads every package through a registry on the loopback interface that
 pnpm-purifier runs. During the lock run the registry forwards each request
-upstream and records what it returns. In the Nix build and in interactive
+upstream, with the credentials the project's `.npmrc` sets for that
+registry, and records what comes back. In the Nix build and in interactive
 mode it serves the locked files from the Nix store, and nothing else. The
 registry mirrors upstream URLs, so
 `https://registry.npmjs.org/ms/-/ms-2.1.3.tgz` is
 `https/registry.npmjs.org/ms/-/ms-2.1.3.tgz` on it, which is also the
 file's `path` in the lockfile.
 
-The lock holds the downloads of one `pnpm-lock.yaml`. pnpm-purifier records
-the hash of `pnpm-lock.yaml` in the lock, and the Nix build fails at
-evaluation when they no longer match. Interactive mode then runs pnpm
-online until the next `pnpm-purifier lock`.
+pnpm fetches some dependencies from the absolute URL in `pnpm-lock.yaml`
+rather than from its registry, and clones others with git. While pnpm runs,
+pnpm-purifier rewrites those entries of `pnpm-lock.yaml` to name its
+registry. It rewrites a copy in the lock run and the Nix build. In
+interactive mode it rewrites the project's own file for the length of the
+command and puts it back afterwards, also after an interrupt.
+
+Each source that `pnpm-lock.yaml` can express is locked as follows.
+
+| Source in `package.json` | Entry in `pnpm-lock.yaml` | Lockfile entry |
+|---|---|---|
+| A registry version, any registry or scope | `{integrity}` | file: the tarball |
+| A tarball URL | `{integrity, tarball: https://…}` | file: the tarball |
+| GitHub, GitLab or Bitbucket (`github:` or `git+https://github.com/…`) | `{gitHosted: true, integrity, tarball: https://codeload…}` | file: the host's archive, which `integrity` already pins |
+| Any other git repository | `{commit, repo, type: git}` | git: the checkout of the commit, which Nix packs as a tarball that the registry serves |
+| A local directory or tarball (`file:`, `link:`, `workspace:`) | `{directory}` or `{tarball: file:…}` | none: it is part of the project source |
+
+A git entry is `{ path, git = { url, rev, submodules = false, leaveDotGit = false }, hash }`,
+where `hash` is what `nix-prefetch-git` reports. pnpm requires an
+integrity for each tarball, and the rewritten entry carries the integrity
+of the tarball served in that run.
+
+The lockfile records the hash of `pnpm-lock.yaml`. The Nix build fails
+during evaluation when `pnpm-lock.yaml` no longer matches, and interactive
+mode then runs pnpm online until the next `pnpm-purifier lock`.
 
 pnpm 12 checks `pnpm-lock.yaml` against its supply-chain policies with
 registry metadata and attestations, which change over time and cannot be
@@ -89,20 +121,34 @@ made with), `fetchurl` (for credentials or mirrors), `buildScript`,
 addons) and `srcFilter`. Native addons build against the headers of the
 build's Node.js, which pnpm-purifier names in `npm_config_nodedir`.
 
+To publish a workspace project, with any `pnpm publish` arguments after
+its name:
+
+```zsh
+nix run github:nix-purifiers/pnpm-purifier -- publish @example/greet --access public
+```
+
 The `pnpm-purifier` command runs the pnpm of the major version that the
 project's `packageManager` field names, from the flake's nixpkgs (pnpm 10,
-11 or 12). `PNPM_PURIFIER_PNPM` names another pnpm, and
-`PNPM_PURIFIER=0` turns interactive mode off.
+11 or 12). `PNPM_PURIFIER_PNPM` names another pnpm, and `PNPM_PURIFIER=0`
+turns interactive mode off.
 
 ## Limitations
 
-- The lock run refuses git dependencies and dependencies given by tarball
-  URL, which pnpm fetches without the registry.
-- The lock run forwards to registries without credentials. A private
-  registry needs a `fetchurl` with credentials for the Nix build, and the
-  lock run does not yet send any.
-- Registry metadata is never locked, and interactive mode does not serve
-  it. A command that resolves versions, such as `pnpm add`, reads registry
-  metadata, so it runs with `PNPM_PURIFIER=0`, followed by
+- Registry metadata is never locked, because a registry changes it each
+  time a package publishes, and interactive mode does not serve it. A
+  command that resolves versions, such as `pnpm add` or `pnpm update`,
+  reads registry metadata, so it runs with `PNPM_PURIFIER=0`, followed by
   `pnpm-purifier lock`.
-- The flake's checks run on x86_64-linux and aarch64-linux.
+- A git dependency installs without its submodules. pnpm clones git
+  dependencies without them, and the archives of GitHub, GitLab and
+  Bitbucket hold none, so the lock records `submodules = false`.
+- Before it runs the `prepare` script of a git dependency, pnpm installs
+  that repository's devDependencies, which the project's `pnpm-lock.yaml`
+  does not list. Resolving them reads registry metadata, which cannot be
+  locked, so such a dependency cannot install offline. The lock run's
+  second install fails on it and names the requests it could not serve.
+- The Nix build fetches with Nix, which does not read `.npmrc`. A private
+  registry needs a `fetchurl` that supplies credentials, such as nixpkgs'
+  `fetchurl` with `netrcPhase`.
+- The flake's checks build on x86_64-linux and evaluate on aarch64-linux.

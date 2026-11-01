@@ -28,17 +28,6 @@ let
   # a failed assertion.
   fails = value: !(builtins.tryEval (builtins.deepSeq value value)).success;
 
-  # A copy of the fixture whose pnpm-lock.yaml differs from the one the
-  # lock was made from.
-  staleSource = pkgs.runCommand "stale-workspace" { } ''
-    cp -r ${./fixtures/workspace} $out
-    chmod -R u+w $out
-    echo "# edited" >> $out/pnpm-lock.yaml
-  '';
-  # A lockfile of another format version.
-  otherVersionLock = pkgs.writeText "pnpm-purifier.lock.json" (
-    builtins.toJSON (lib.importJSON ./fixtures/workspace/pnpm-purifier.lock.json // { version = 999; })
-  );
 in
 {
   inherit cli;
@@ -53,6 +42,53 @@ in
     grep -F "One day is 86400000 milliseconds." <<<"$out_text"
     touch $out
   '';
+
+  # A project with a dependency from each source pnpm can lock
+  # (tests/fixtures/sources): GitHub, given as github: and as git+https:,
+  # which pnpm fetches as codeload tarballs; a tarball URL outside the
+  # registry; a git repository on a host pnpm does not know, which pnpm
+  # clones; a local directory; and a local tarball. The project's bin
+  # imports each one.
+  sources =
+    let
+      project = (buildPnpmProject { src = ./fixtures/sources; }).packages.sources;
+    in
+    pkgs.runCommand "sources" { } ''
+      out_text=$(${lib.getExe project})
+      echo "$out_text"
+      grep -Fx 'github: a\.b' <<<"$out_text"
+      grep -Fx 'git+https github: true' <<<"$out_text"
+      grep -Fx 'tarball url: true' <<<"$out_text"
+      grep -Fx 'git: 3600000' <<<"$out_text"
+      grep -Fx 'directory: vendored' <<<"$out_text"
+      grep -Fx 'tarball file: packed' <<<"$out_text"
+      touch $out
+    '';
+
+  # `pnpm-purifier publish` publishes the tarball output of a project with
+  # `pnpm publish`. The check publishes greet's tarball to a registry on
+  # the loopback interface (tests/fake-registry.mjs) and compares what the
+  # registry received with the file Nix built.
+  publish =
+    pkgs.runCommand "publish"
+      {
+        nativeBuildInputs = [
+          pkgs.nodejs
+          workspace.pnpm
+        ];
+      }
+      ''
+        export HOME="$TMPDIR/home" XDG_RUNTIME_DIR="$TMPDIR/run"
+        mkdir -p "$HOME" "$XDG_RUNTIME_DIR"
+        node ${./fake-registry.mjs} "$TMPDIR/port" "$TMPDIR/published.tgz" &
+        while [ ! -s "$TMPDIR/port" ]; do sleep 0.1; done
+        port=$(cat "$TMPDIR/port")
+        echo "//127.0.0.1:$port/:_authToken=check" > "$HOME/.npmrc"
+        tarball=${greet.tarball}/example-greet-1.0.0.tgz
+        pnpm publish "$tarball" --registry "http://127.0.0.1:$port/" --no-git-checks
+        cmp "$tarball" "$TMPDIR/published.tgz"
+        touch $out
+      '';
 
   # A library that is not private gets the tarball `pnpm pack` makes.
   workspace-greet-tarball = pkgs.runCommand "workspace-greet-tarball" { } ''
@@ -88,18 +124,18 @@ in
     assert admits "aarch64-darwin" { libc = [ "musl" ]; };
     pkgs.runCommand "platform-filters" { } "touch $out";
 
-  # Evaluation fails for a lock that does not match pnpm-lock.yaml, and for
-  # a lock of another format version.
+  # Evaluation fails for a lock that does not match pnpm-lock.yaml (here the
+  # lock of the other fixture), and for a lock of another format version.
   lock-checks =
     assert fails
       (buildPnpmProject {
-        src = staleSource;
-        lockFile = ./fixtures/workspace/pnpm-purifier.lock.json;
-      }).packages."@example/app".drvPath;
+        src = ./fixtures/workspace;
+        lockFile = ./fixtures/sources/pnpm-purifier.lock.json;
+      }).packages.sources.drvPath;
     assert fails
       (buildPnpmProject {
         src = ./fixtures/workspace;
-        lockFile = otherVersionLock;
+        lockFile = ./fixtures/other-version.lock.json;
       }).packages."@example/app".drvPath;
     pkgs.runCommand "lock-checks" { } "touch $out";
 }

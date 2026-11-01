@@ -1,32 +1,12 @@
 # Reads a pnpm-purifier lockfile (written by `pnpm-purifier lock`).
 #
-# Needs no nixpkgs: the interactive mode evaluates this with nothing but
-# the Nix installation it runs.
+# Needs no nixpkgs.
 { lockFile }:
 let
   lock = builtins.fromJSON (builtins.readFile lockFile);
 
   supportedVersion = import ./lock-version.nix;
-
-  # A store path name from a file name. Store path names allow
-  # [A-Za-z0-9+._?=-], must not start with a dot, and are at most 211
-  # characters; every other character becomes "_". The interactive mode and
-  # the sandboxed build both name their fetches with this function, so they
-  # share store paths.
-  storeName =
-    fileName:
-    let
-      # builtins.split alternates the text between matches with a list per
-      # match.
-      replaced = builtins.concatStringsSep "" (
-        map (part: if builtins.isList part then "_" else part) (
-          builtins.split "[^A-Za-z0-9+._?=-]" fileName
-        )
-      );
-      undotted = builtins.head (builtins.match "\\.*(.*)" replaced);
-      nonEmpty = if undotted == "" then "file" else undotted;
-    in
-    builtins.substring 0 200 nonEmpty;
+  storeName = import ./store-name.nix;
 in
 assert
   lock.version == supportedVersion
@@ -35,8 +15,19 @@ lock
 // {
   inherit storeName;
 
-  # The fetch name of an artifact: its file name, made a valid store name.
-  artifactName = artifact: storeName (builtins.baseNameOf artifact.path);
+  # The store name of an artifact: its file name, made a valid store name.
+  # A git dependency's path ends in package.tgz, so its name also takes the
+  # commit before it.
+  artifactName =
+    artifact:
+    let
+      parts = builtins.filter builtins.isString (builtins.split "/" artifact.path);
+      n = builtins.length parts;
+    in
+    if artifact ? git then
+      storeName "${builtins.elemAt parts (n - 2)}-${builtins.elemAt parts (n - 1)}"
+    else
+      storeName (builtins.baseNameOf artifact.path);
 
   # The artifacts that apply to a Nix system: the lock holds the native
   # packages of every platform it covers, and a build on one system reads

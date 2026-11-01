@@ -118,6 +118,20 @@ let
       deployed = "$out/lib/node_modules/${project.name}";
       filter = lib.escapeShellArg project.name;
       filterWithDeps = lib.escapeShellArg "${project.name}...";
+      # `pnpm deploy` copies a workspace project with its production
+      # dependencies, and works only for a project inside a workspace. The
+      # project at the root keeps its own directory, reinstalled without
+      # its development dependencies.
+      atRoot = project.path == ".";
+      deploy =
+        if atRoot then
+          ''
+            pnpm install --frozen-lockfile --prod --store-dir "$TMPDIR/store" --filter ${filter}
+          ''
+        else
+          ''
+            pnpm --filter ${filter} deploy --prod "$TMPDIR/deploy"
+          '';
     in
     assert freshLock;
     stdenv.mkDerivation {
@@ -150,11 +164,11 @@ let
             pnpm install --frozen-lockfile --store-dir "$TMPDIR/store" --filter ${filterWithDeps}
             pnpm --filter ${filterWithDeps} run --if-present ${lib.escapeShellArg buildScript}
             ${lib.optionalString doCheck "pnpm --filter ${filter} run --if-present test"}
-            pnpm --filter ${filter} deploy --prod "$TMPDIR/deploy"
             ${lib.optionalString (!isPrivate) ''
               mkdir -p "$TMPDIR/pack"
               pnpm --filter ${filter} pack --pack-destination "$TMPDIR/pack"
             ''}
+            ${deploy}
           '
         runHook postBuild
       '';
@@ -162,7 +176,7 @@ let
       installPhase = ''
         runHook preInstall
         mkdir -p "$(dirname "${deployed}")"
-        cp -r "$TMPDIR/deploy" "${deployed}"
+        cp -r ${if atRoot then "." else ''"$TMPDIR/deploy"''} "${deployed}"
         ${lib.concatStrings (
           lib.mapAttrsToList (bin: file: ''
             makeWrapper ${lib.getExe nodejs} "$out/bin/${bin}" \

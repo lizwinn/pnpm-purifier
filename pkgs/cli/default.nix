@@ -1,18 +1,21 @@
 # SPDX-License-Identifier: MIT
 #
-# The `pnpm-purifier` command: the lock run (`pnpm-purifier lock`) and pnpm
-# on the locked downloads (`pnpm-purifier <pnpm arguments>`).
+# The `pnpm-purifier` command: the lock run (`pnpm-purifier lock`), pnpm
+# on the locked downloads (`pnpm-purifier <pnpm arguments>`), and
+# publishing what Nix built (`pnpm-purifier publish`).
 #
 # It runs the pnpm of the major version that the project's `packageManager`
 # field names, from this flake's nixpkgs; a project without the field gets
 # the pnpm on PATH, and nixpkgs' default pnpm when PATH has none.
-# PNPM_PURIFIER_PNPM names another pnpm. Interactive mode realizes the
-# lockfile with the `nix` on PATH.
+# PNPM_PURIFIER_PNPM names another pnpm. The Nix builds it starts use this
+# flake's nixpkgs and the `nix` on PATH.
 {
   lib,
+  pkgs,
   runCommand,
   makeWrapper,
   nodejs,
+  nix-prefetch-git,
   pnpm,
   pnpm_10 ? null,
   pnpm_11 ? null,
@@ -43,7 +46,9 @@ runCommand "pnpm-purifier"
     makeWrapper ${lib.getExe nodejs} "$out/bin/pnpm-purifier" \
       --add-flags "$share/src/pnpm-purifier.mjs" \
       --set-default PNPM_PURIFIER_NIX_LIB "$share/nix/lib" \
+      --set-default PNPM_PURIFIER_NIXPKGS ${pkgs.path} \
       --set-default PNPM_PURIFIER_PNPMS ${lib.escapeShellArg (builtins.toJSON pnpms)} \
+      --prefix PATH : ${lib.makeBinPath [ nix-prefetch-git ]} \
       --suffix PATH : ${
         lib.makeBinPath [
           pnpm

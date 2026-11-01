@@ -1,0 +1,18 @@
+{
+  "name": "sources",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@12.9.0",
+  "bin": {
+    "sources": "check.js"
+  },
+  "dependencies": {
+    "escape-string-regexp": "github:sindresorhus/escape-string-regexp#v5.0.0",
+    "is-plain-obj": "git+https://github.com/sindresorhus/is-plain-obj.git#v4.1.0",
+    "is-odd": "https://registry.yarnpkg.com/is-odd/-/is-odd-3.0.1.tgz",
+    "ms": "git+https://salsa.debian.org/js-team/node-ms.git#3171b261a43eeca83fbd2d6711c0f74e665584d1",
+    "vendored": "file:./vendor/vendored",
+    "packed": "file:./vendor/packed-1.0.0.tgz"
+  }
+}
