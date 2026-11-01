@@ -4,8 +4,12 @@
   "type": "module",
   "main": "index.js",
   "files": [
-    "index.js"
+    "index.js",
+    "built.txt"
   ],
+  "scripts": {
+    "build": "./gen.js"
+  },
   "dependencies": {
     "picocolors": "1.1.1"
   }

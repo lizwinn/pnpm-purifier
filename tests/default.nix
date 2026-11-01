@@ -110,6 +110,9 @@ in
   workspace-greet-tarball = pkgs.runCommand "workspace-greet-tarball" { } ''
     tarball=${greet.artifacts.tarball}
     ${lib.getExe pkgs.gnutar} -xzf "$tarball" -O package/package.json | grep -F '"name": "@example/greet"'
+    # greet's build script runs by its path, with a #!/usr/bin/env node
+    # shebang, which the sandbox has no /usr/bin/env for.
+    ${lib.getExe pkgs.gnutar} -xzf "$tarball" -O package/built.txt | grep -Fx 'built by gen.js'
     touch $out
   '';
 
