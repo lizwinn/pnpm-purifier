@@ -116,7 +116,7 @@ nixpkgs (pnpm 10, 11 or 12), and keeps pnpm on that version.
 
 `PNPM_PURIFIER=0` makes `pnpm-purifier` run pnpm as it is. A lock run
 installs twice, once online, recording, and once offline from what it
-recorded; most of its time goes to the first install.
+recorded.
 
 ## Offline work
 
@@ -199,7 +199,9 @@ response as an inline entry `{ path, contents }`, cut down to the versions
 whose tarballs it recorded, so offline the dependency resolves to the same
 versions.
 
-These are refused, or left to the user, for a reason in the mechanism:
+These limits affect a project:
+
+- The Nix build runs on x86_64-linux and aarch64-linux.
 
 - Registry metadata is not locked, except as above, because a registry
   changes it each time a package publishes. A command that resolves
@@ -218,22 +220,52 @@ These are refused, or left to the user, for a reason in the mechanism:
 
 ## Examples
 
-CI locks and builds [unjs/giget](https://github.com/unjs/giget), a
-command-line tool on pnpm 11, at commit
-`f1dad453055b97a81d5227edce7262c8dcaf53d2`. Its `pnpm-lock.yaml` holds
-421 packages, all registry tarballs, so giget needs no
-`pnpm-purifier.lock.json`. The flake's `real-world` check builds giget
-with obuild in the sandbox and runs the command it builds. The
-`conformance-relock` CI job runs the lock run on a checkout of giget and
-checks that it leaves `pnpm-lock.yaml` as it is and writes no purifier
-lockfile.
+[giget](https://github.com/unjs/giget) is a command-line tool that
+downloads templates from git repositories. It is a pnpm project with a
+`build` script, so the quickstart applies to it as it stands. In a
+checkout of giget:
 
-The fixtures in `tests/fixtures/` are smaller examples, one for each kind
-of source in the table above: `workspace` (a pnpm workspace with a native
-esbuild binary), `sources` (GitHub, tarball-URL, git, directory and
-local-tarball dependencies), `prepare` (a git dependency with a prepare
-script) and `update` (a dependency locked below the newest version its
-range allows).
+```zsh
+nix run github:nix-purifiers/pnpm-purifier -- lock
+```
+
+The lock run says that giget needs no `pnpm-purifier.lock.json`, because
+every package in its `pnpm-lock.yaml` comes from the npm registry with an
+integrity hash. The everyday loop then runs through pnpm-purifier:
+
+```zsh
+alias pnpm='nix run github:nix-purifiers/pnpm-purifier --'
+pnpm install
+pnpm run build
+pnpm exec vitest run
+pnpm add kleur
+```
+
+`pnpm install` installs from the locked files, offline. `pnpm add kleur`
+resolves online and locks again. A `flake.nix` beside `package.json`
+builds giget in the Nix sandbox:
+
+```nix
+{
+  inputs.pnpm-purifier.url = "github:nix-purifiers/pnpm-purifier";
+  inputs.nixpkgs.follows = "pnpm-purifier/nixpkgs";
+
+  outputs = { nixpkgs, pnpm-purifier, ... }:
+    let
+      system = "x86_64-linux";
+      pkgs = nixpkgs.legacyPackages.${system};
+      project = pnpm-purifier.lib.pnpm-purifier.buildPnpmProject {
+        inherit pkgs;
+        src = ./.;
+      };
+    in
+    {
+      packages.${system}.default = project.packages.giget;
+    };
+}
+```
+
+`nix build` then builds giget, and `./result/bin/giget --help` runs it.
 
 ## Credits
 
