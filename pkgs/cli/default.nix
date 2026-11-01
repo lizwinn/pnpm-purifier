@@ -22,6 +22,12 @@
   pnpm_12 ? null,
 }:
 let
+  # The source of the purifier library flake, at the revision this flake's
+  # lock pins. The Nix builds of the command take its `lib.purifier` with
+  # builtins.getFlake.
+  flakeLock = lib.importJSON ../../flake.lock;
+  purifierSource = builtins.fetchTree flakeLock.nodes.${flakeLock.nodes.root.inputs.purifier}.locked;
+
   pnpms = lib.mapAttrs (_: p: lib.getExe p) (
     lib.filterAttrs (_: p: p != null) {
       "10" = pnpm_10;
@@ -47,6 +53,7 @@ runCommand "pnpm-purifier"
       --add-flags "$share/src/pnpm-purifier.mjs" \
       --set-default PNPM_PURIFIER_NIX_LIB "$share/nix/lib" \
       --set-default PNPM_PURIFIER_NIXPKGS ${pkgs.path} \
+      --set-default PNPM_PURIFIER_LIBRARY ${purifierSource} \
       --set-default PNPM_PURIFIER_PNPMS ${lib.escapeShellArg (builtins.toJSON pnpms)} \
       --prefix PATH : ${lib.makeBinPath [ nix-prefetch-git ]} \
       --suffix PATH : ${

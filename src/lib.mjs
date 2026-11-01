@@ -229,6 +229,14 @@ export function isMetadata(contentType) {
   return /json/.test(contentType ?? "");
 }
 
+// Whether a lockfile path names the registry metadata of a package: a
+// package name (`name` or `@scope/name`) right under the host.
+export function isMetadataPath(relPath) {
+  const [scheme, host, ...rest] = relPath.split("/");
+  if ((scheme !== "https" && scheme !== "http") || !host) return false;
+  return rest.length === 1 ? rest[0] !== "" : rest.length === 2 && rest[0].startsWith("@") && rest[1] !== "";
+}
+
 // A packument cut down to the versions whose tarballs the lock run
 // recorded. pnpm reads registry metadata only to resolve a dependency that
 // pnpm-lock.yaml does not list, such as a devDependency of a git

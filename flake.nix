@@ -5,6 +5,9 @@
 
   inputs = {
     caisson.url = "github:nix-caisson/caisson";
+    # The library the nix-purifiers share: download entries to store paths,
+    # and npm's platform filters.
+    purifier.url = "github:nix-purifiers/purifier";
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     # The library comes from the nixpkgs.lib mirror. The package sets
     # take nixpkgs.
@@ -14,7 +17,7 @@
   };
 
   outputs =
-    inputs@{ caisson, ... }:
+    inputs@{ caisson, purifier, ... }:
     let
       lib = caisson.lib.caisson.mkLib {
         inherit (caisson.lib.caisson.pins.flake inputs) sources root;
@@ -24,7 +27,7 @@
           "aarch64-linux"
         ];
         projects = {
-          inherit caisson;
+          inherit caisson purifier;
         };
 
         configs = lib: lib.caisson.mkModules ./configs;

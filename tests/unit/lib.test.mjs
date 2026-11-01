@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import zlib from "node:zlib";
 import {
   LOCK_VERSION,
+  isMetadataPath,
   isResolving,
   localRegistry,
   localizeMetadata,
@@ -188,6 +189,21 @@ test("localizeMetadata names tarballs on the local registry", () => {
   const doc = { versions: { "1.0.0": { dist: { tarball: "https://registry.npmjs.org/a/-/a-1.0.0.tgz" } } } };
   const local = JSON.parse(localizeMetadata(JSON.stringify(doc), "http://127.0.0.1:5/"));
   assert.equal(local.versions["1.0.0"].dist.tarball, "http://127.0.0.1:5/https/registry.npmjs.org/a/-/a-1.0.0.tgz");
+});
+
+test("isMetadataPath is true for package names under a registry host only", () => {
+  for (const p of ["https/registry.npmjs.org/ms", "https/registry.npmjs.org/@esbuild/linux-x64", "http/localhost%3A4873/a"]) {
+    assert.equal(isMetadataPath(p), true, p);
+  }
+  for (const p of [
+    "https/registry.npmjs.org/ms/-/ms-2.1.3.tgz",
+    "https/codeload.github.com/o/r/tar.gz/abc",
+    "https/registry.npmjs.org/a/b",
+    "git/salsa.debian.org/js-team/node-ms/abc/package.tgz",
+    "https/registry.npmjs.org/",
+  ]) {
+    assert.equal(isMetadataPath(p), false, p);
+  }
 });
 
 test("isResolving tells resolving commands from offline ones", () => {

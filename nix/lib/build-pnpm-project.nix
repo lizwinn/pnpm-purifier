@@ -33,6 +33,9 @@
   pnpm_10 ? null,
   pnpm_11 ? null,
   pnpm_12 ? null,
+  # The purifier library (`lib.purifier` of github:nix-purifiers/purifier),
+  # which the pnpm-purifier overlay passes.
+  purifier,
 }:
 {
   # The root of the pnpm workspace or project, which holds pnpm-lock.yaml.
@@ -42,7 +45,8 @@
   # The pnpm that runs the build. The default is pnpm of the major version
   # the lock was made with.
   pnpm ? null,
-  # Replaces the built-in fetcher; see fetch.nix.
+  # Replaces nixpkgs' fetchurl for the locked files, such as a fetchurl
+  # that sends credentials; see dependencies.nix.
   fetchurl ? null,
   # The package script each package build runs after installing, in the
   # project and in the workspace projects it depends on, when they have it.
@@ -99,7 +103,9 @@ let
     filter = if srcFilter != null then srcFilter else defaultSrcFilter;
   };
 
-  dependencies = callPackage ./dependencies.nix { inherit lockFile fetchurl; };
+  dependencies = callPackage ./dependencies.nix (
+    { inherit lockFile purifier; } // lib.optionalAttrs (fetchurl != null) { inherit fetchurl; }
+  );
 
   # The command-line program with the module it imports.
   cli = "${../../src}/pnpm-purifier.mjs";

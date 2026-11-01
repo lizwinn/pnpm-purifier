@@ -35,30 +35,19 @@ lock
 // {
   inherit storeName;
 
-  # The store name of an artifact: its file name, made a valid store name.
-  # A git dependency's path ends in package.tgz, so its name also takes the
-  # commit before it. An inline entry is registry metadata, and its name
-  # ends in .json, which the local registry serves as JSON.
+  # The store name of the tarball that git-tarball.nix packs for a git
+  # dependency. Its path ends in package.tgz, so the name also takes the
+  # commit before it.
   artifactName =
     artifact:
     let
       parts = builtins.filter builtins.isString (builtins.split "/" artifact.path);
       n = builtins.length parts;
     in
-    if artifact ? git then
-      storeName "${builtins.elemAt parts (n - 2)}-${builtins.elemAt parts (n - 1)}"
-    else if artifact ? contents then
-      storeName "${builtins.baseNameOf artifact.path}.json"
-    else
-      storeName (builtins.baseNameOf artifact.path);
+    storeName "${builtins.elemAt parts (n - 2)}-${builtins.elemAt parts (n - 1)}";
 
   # The directory of the repository that a git dependency names, or null.
   gitSubdirectory = artifact: (lock.gitSubdirectories or { }).${artifact.path} or null;
-
-  # The artifacts that apply to a Nix system: the lock holds the native
-  # packages of every platform it covers, and a build on one system reads
-  # only its own.
-  artifactsFor = system: builtins.filter (import ./admits.nix system) lock.artifacts;
 
   projectsByName = builtins.listToAttrs (
     map (p: {

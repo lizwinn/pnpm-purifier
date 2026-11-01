@@ -59,6 +59,7 @@
               inherit pkgs;
               overlay = self.overlays.default;
               inherit (self.packages.${system}) cli;
+              inherit (lib) purifier;
             };
             treefmt.programs.nixfmt.enable = true;
           };

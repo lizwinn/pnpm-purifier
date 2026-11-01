@@ -52,6 +52,7 @@ import {
   LOCK_PLATFORMS,
   LOCK_VERSION,
   isMetadata,
+  isMetadataPath,
   isResolving,
   localRegistry,
   localizeMetadata,
@@ -156,20 +157,14 @@ function pinProjectRegistries(projectDir, base, registries) {
 
 // --- The local registry -----------------------------------------------------
 
-// A path that names registry metadata rather than a file: neither a git
-// dependency nor a tarball.
-function isMetadataPath(relPath) {
-  return !relPath.startsWith("git/") && !relPath.includes("/-/") && !relPath.endsWith(".tgz");
-}
-
 // Starts the local registry. `lookup(relPath)` returns a file path or a
 // Buffer to serve, or null; `record(relPath, accept)`, when given, answers
 // the paths that `lookup` does not know, by fetching them upstream with the
-// Accept header pnpm sent. Inline metadata is served as JSON: a Buffer
-// whose path is in `inlinePaths`, or a file whose name ends in .json, which
-// is how dependencies.nix names an inline entry. Each path it cannot serve
-// goes into `misses`, and with `quiet` it reports none of them itself.
-function startRegistry({ lookup, record = null, misses = new Set(), inlinePaths = new Set(), quiet = false }) {
+// Accept header pnpm sent. It serves registry metadata (an inline entry),
+// which is JSON and so starts with "{", as JSON; a tarball starts with
+// gzip's magic bytes. Each path it cannot serve goes into `misses`, and with
+// `quiet` it reports none of them itself.
+function startRegistry({ lookup, record = null, misses = new Set(), quiet = false }) {
   let base = null;
   const server = http.createServer(async (req, res) => {
     const relPath = decodeURIComponent(req.url.split("?")[0]).replace(/^\/+/, "");
@@ -207,18 +202,15 @@ function startRegistry({ lookup, record = null, misses = new Set(), inlinePaths 
         res.end(JSON.stringify({ error: `not locked: ${relPath}` }));
         return;
       }
-      const json = Buffer.isBuffer(found) ? inlinePaths.has(relPath) : found.endsWith(".json");
-      if (json) {
-        const body = Buffer.from(localizeMetadata((Buffer.isBuffer(found) ? found : fs.readFileSync(found)).toString("utf8"), base));
+      const data = Buffer.isBuffer(found) ? found : fs.readFileSync(found);
+      if (data[0] === 0x7b) {
+        const body = Buffer.from(localizeMetadata(data.toString("utf8"), base));
         res.writeHead(200, { "content-type": "application/json", "content-length": body.length });
         res.end(req.method === "HEAD" ? undefined : body);
         return;
       }
-      const size = Buffer.isBuffer(found) ? found.length : fs.statSync(found).size;
-      res.writeHead(200, { "content-type": "application/octet-stream", "content-length": size });
-      if (req.method === "HEAD") res.end();
-      else if (Buffer.isBuffer(found)) res.end(found);
-      else fs.createReadStream(found).pipe(res);
+      res.writeHead(200, { "content-type": "application/octet-stream", "content-length": data.length });
+      res.end(req.method === "HEAD" ? undefined : data);
     } catch (err) {
       console.error(`pnpm-purifier: ${relPath}: ${err.message}`);
       res.writeHead(502).end();
@@ -270,6 +262,15 @@ function pnpmCommand(root = process.cwd()) {
 function nixpkgsExpr() {
   const p = process.env.PNPM_PURIFIER_NIXPKGS;
   return p ? `(import ${JSON.stringify(p)} { })` : `(import <nixpkgs> { })`;
+}
+
+// The purifier library, `lib.purifier` of the flake github:nix-purifiers/purifier.
+// The flake's package sets PNPM_PURIFIER_LIBRARY to the source of the
+// revision it pins.
+function libraryExpr() {
+  const p = process.env.PNPM_PURIFIER_LIBRARY;
+  const ref = p ? `path:${p}` : "github:nix-purifiers/purifier";
+  return `(builtins.getFlake ${JSON.stringify(ref)}).lib.purifier`;
 }
 
 // Runs `nix build` and returns the output path; `hint`, when given, follows
@@ -353,14 +354,14 @@ function lockGit(resolution) {
     git: { url: repo, rev: commit, submodules: false, leaveDotGit: false, commitObject: null },
     hash,
   };
-  // The same derivation as the git entry's in dependencies.nix, named as
-  // lock.nix's artifactName names it.
-  const lockNix = `(import ${JSON.stringify(path.join(libDir, "lock.nix"))} { lockFile = builtins.toFile "lock.json" (builtins.toJSON { version = import ${JSON.stringify(path.join(libDir, "lock-version.nix"))}; projects = [ ]; artifacts = [ ]; }); })`;
+  // The tarball dependencies.nix makes of the entry: the library fetches
+  // the checkout, and git-tarball.nix packs it.
   const expr =
-    `let pkgs = ${nixpkgsExpr()}; entry = builtins.fromJSON ${JSON.stringify(JSON.stringify(entry))}; in ` +
+    `let pkgs = ${nixpkgsExpr()}; purifier = ${libraryExpr()}; ` +
+    `entry = builtins.fromJSON ${JSON.stringify(JSON.stringify(entry))}; in ` +
     `pkgs.callPackage ${JSON.stringify(path.join(libDir, "git-tarball.nix"))} { } ` +
-    `{ name = ${lockNix}.artifactName entry; inherit (entry.git) url rev submodules leaveDotGit; ` +
-    `inherit (entry) hash; subdirectory = ${subdirectory ? JSON.stringify(subdirectory) : "null"}; }`;
+    `{ name = "${commit}-package.tgz"; checkout = purifier.fetchEntry { inherit pkgs; } entry; ` +
+    `subdirectory = ${subdirectory ? JSON.stringify(subdirectory) : "null"}; }`;
   return { entry, subdirectory: subdirectory ?? null, file: nixBuild(expr, ["--no-link"]) };
 }
 
@@ -453,7 +454,6 @@ async function lock(root = process.cwd()) {
     const verifier = await startRegistry({
       lookup: (p) => files.get(p) ?? gitFiles.get(p) ?? inline.get(p) ?? null,
       misses,
-      inlinePaths: new Set(inline.keys()),
       quiet: true,
     });
     console.error("pnpm-purifier: installing again from the recorded downloads alone");
@@ -585,7 +585,7 @@ function realize(root, lockFile) {
   fs.mkdirSync(stateDir, { recursive: true });
   const expr =
     `${nixpkgsExpr()}.callPackage ${JSON.stringify(path.join(libDir, "dependencies.nix"))} ` +
-    `{ lockFile = ${JSON.stringify(lockFile)}; }`;
+    `{ lockFile = ${JSON.stringify(lockFile)}; purifier = ${libraryExpr()}; }`;
   return nixBuild(
     expr,
     ["--out-link", path.join(stateDir, "manifest")],
@@ -644,7 +644,7 @@ async function publish(name, args) {
   }
   const expr =
     `let pkgs = ${nixpkgsExpr()}; ` +
-    `build = pkgs.callPackage ${JSON.stringify(path.join(libDir, "build-pnpm-project.nix"))} { }; in ` +
+    `build = pkgs.callPackage ${JSON.stringify(path.join(libDir, "build-pnpm-project.nix"))} { purifier = ${libraryExpr()}; }; in ` +
     `(build { src = /. + ${JSON.stringify(root)}; lockFile = /. + ${JSON.stringify(lockFile)}; })` +
     `.packages.${JSON.stringify(name)}.tarball`;
   const out = nixBuild(expr, ["--no-link"]);

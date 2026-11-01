@@ -7,6 +7,8 @@
   # The flake's default package overlay, which adds buildPnpmProject.
   overlay,
   cli,
+  # The purifier library, `lib.purifier`.
+  purifier,
 }:
 let
   inherit (pkgs) lib;
@@ -117,31 +119,23 @@ in
   '';
 
   # A build reads the native packages of its own system only. The lock
-  # holds esbuild's binary package for each of the four platforms it covers.
+  # holds esbuild's binary package for each of the four platforms it
+  # covers, and the manifest of the host system holds that system's one.
   platform-filters =
     let
-      admits = import ../nix/lib/admits.nix;
-      # The artifacts that `dependencies` holds for the host system.
-      hostPaths = map (a: a.path) (workspace.lock.artifactsFor pkgs.stdenv.hostPlatform.system);
-      esbuildPackages = builtins.filter (lib.hasInfix "/@esbuild/") hostPaths;
-      linuxX64 = "https/registry.npmjs.org/@esbuild/linux-x64/-/linux-x64-0.25.12.tgz";
+      own =
+        {
+          x86_64-linux = "linux-x64";
+          aarch64-linux = "linux-arm64";
+        }
+        .${pkgs.stdenv.hostPlatform.system};
     in
-    assert
-      pkgs.stdenv.hostPlatform.system != "x86_64-linux"
-      || esbuildPackages == [ linuxX64 ]
-      || throw "the x86_64-linux manifest holds ${toString esbuildPackages}";
-    assert admits "x86_64-linux" { };
-    assert admits "aarch64-darwin" {
-      os = [ "darwin" ];
-      cpu = [ "arm64" ];
-    };
-    assert !(admits "x86_64-linux" { os = [ "darwin" ]; });
-    assert !(admits "x86_64-linux" { cpu = [ "arm64" ]; });
-    assert admits "x86_64-linux" { os = [ "!win32" ]; };
-    assert !(admits "x86_64-linux" { os = [ "!linux" ]; });
-    assert !(admits "x86_64-linux" { libc = [ "musl" ]; });
-    assert admits "aarch64-darwin" { libc = [ "musl" ]; };
-    pkgs.runCommand "platform-filters" { } "touch $out";
+    pkgs.runCommand "platform-filters" { nativeBuildInputs = [ pkgs.jq ]; } ''
+      jq -r 'keys[] | select(contains("/@esbuild/"))' ${workspace.dependencies} > esbuild
+      cat esbuild
+      [ "$(cat esbuild)" = "https/registry.npmjs.org/@esbuild/${own}/-/${own}-0.25.12.tgz" ]
+      touch $out
+    '';
 
   # The outputs of each project are known during evaluation, before a
   # build: the bin wrappers by name, and the tarball of a project that is
@@ -155,17 +149,16 @@ in
 
   # A lock with an inline entry (tests/fixtures/inline.lock.json), which
   # holds registry metadata that pnpm reads offline when it prepares a git
-  # dependency. The manifest serves the entry from a file with its contents,
-  # named .json so that the registry serves it as JSON.
+  # dependency. The manifest serves the entry from a file with its contents.
   inline-entry =
     let
       dependencies = withOverlay.callPackage ../nix/lib/dependencies.nix {
+        inherit purifier;
         lockFile = ./fixtures/inline.lock.json;
       };
     in
     pkgs.runCommand "inline-entry" { nativeBuildInputs = [ pkgs.jq ]; } ''
       file=$(jq -r '."https/registry.npmjs.org/picocolors"' ${dependencies})
-      case "$file" in *.json) ;; *) echo "$file is not named .json"; exit 1 ;; esac
       jq -e '.versions."1.1.0".dist.tarball' "$file"
       tarball=$(jq -r '."https/registry.npmjs.org/picocolors/-/picocolors-1.1.0.tgz"' ${dependencies})
       ${lib.getExe pkgs.gnutar} -xzf "$tarball" -O package/package.json | jq -e '.version == "1.1.0"'
