@@ -50,6 +50,13 @@ nix build --impure --expr '
   (pkgs.pnpm-purifier.buildPnpmProject { src = ./.; }).packages."@example/app"'
 ```
 
+This uses the purifier's pinned nixpkgs, matching the lock command above.
+To build with ambient `<nixpkgs>` from your Nix search path instead,
+replace `import purifier.inputs.nixpkgs` with `import <nixpkgs>`.
+Both forms need no Nix files in your project. The build tool and language
+versions must match the lockfile; with ambient nixpkgs, lock with the
+purifier from that package set or pass a compatible toolchain to the builder.
+
 The flake's `overlays.default` adds one attribute to a package set: the
 scope `pnpm-purifier`, which holds the builder `buildPnpmProject` and the
 `cli` command. A project whose authors want a flake can have one that
