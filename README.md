@@ -27,7 +27,7 @@ nix profile install 'github:nix-purifiers/pnpm-purifier'
 ```
 
 The required wrapper is `pnpm-purifier`; pass your usual tool
-arguments after it. With no purifier lockfile, it warns on standard error
+arguments after it. With neither pnpm-lock.yaml nor a purifier lockfile, it warns on standard error
 and runs the ordinary tool with impure resolution.
 
 You can keep the usual command spelling with `alias pnpm=pnpm-purifier`
@@ -221,7 +221,7 @@ Each common mistake stops with what went wrong and the command to run.
 
 | Mistake | What happens |
 |---|---|
-| `pnpm-lock.yaml` changed after `pnpm-purifier lock` | the command says the lock is stale, runs pnpm online and names `pnpm-purifier lock`; the Nix build fails during evaluation with the same command |
+| `pnpm-lock.yaml` changed after `pnpm-purifier lock` | the command stops, names `pnpm-purifier lock` and offers an explicit `--online` opt-out; the Nix build fails during evaluation with the same command |
 | `pnpm-purifier.lock.json` was edited by hand | its `contentHash`, a hash of its own content, no longer matches; the command and Nix evaluation both stop and name `pnpm-purifier lock` |
 | `pnpm-purifier.lock.json` is not valid | the command and Nix evaluation say what is wrong and name `pnpm-purifier lock` |
 | The purifier lockfile has no entry for a git dependency | Nix evaluation names the dependency and `pnpm-purifier lock` |

@@ -306,3 +306,32 @@ test("registriesCover tells whether the user config adds registries", () => {
   assert.ok(!registriesCover(project, { default: "https://mirror.example/", scopes: {} }));
   assert.ok(!registriesCover(project, { default: "https://registry.npmjs.org/", scopes: { "@y": "https://c.example/" } }));
 });
+
+test("unlocked wrapper delegates without changing arguments, status or package-manager settings", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const os = await import("node:os");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pnpm-purifier-unlocked-"));
+  try {
+    const native = path.join(root, "native");
+    fs.writeFileSync(native, `#!${process.execPath}\nconsole.log(JSON.stringify({args:process.argv.slice(2), setting:process.env.npm_config_manage_package_manager_versions})); console.error('native stderr'); process.exit(23);\n`);
+    fs.chmodSync(native, 0o755);
+    const script = fileURLToPath(new URL("../../src/pnpm-purifier.mjs", import.meta.url));
+    const environment = { ...process.env, PNPM_PURIFIER_PNPM: native, NODE_USE_ENV_PROXY: "1", npm_config_manage_package_manager_versions: "unchanged" };
+    const args = ["install", "argument with spaces", "--example=a=b"];
+    const result = spawnSync(process.execPath, [script, ...args], { cwd: root, env: environment, encoding: "utf8" });
+    assert.equal(result.status, 23, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), { args, setting: "unchanged" });
+    assert.match(result.stderr, /warning:.*impurely/);
+    assert.match(result.stderr, /native stderr/);
+    assert.deepEqual(fs.readdirSync(root), ["native"]);
+
+    // pnpm-lock.yaml may be the complete lock: absence of extra JSON does
+    // not make a configured project impure.
+    fs.writeFileSync(path.join(root, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+    const locked = spawnSync(process.execPath, [script, "--version"], { cwd: root, env: environment, encoding: "utf8" });
+    assert.equal(locked.status, 23, locked.stderr);
+    assert.doesNotMatch(locked.stderr, /impurely/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

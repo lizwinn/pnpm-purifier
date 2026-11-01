@@ -296,8 +296,9 @@ function childEnv(env = process.env) {
 }
 
 function run(command, args, options = {}) {
+  const { impure = false, ...spawnOptions } = options;
   return new Promise((resolve) => {
-    const child = spawn(command, args, { stdio: "inherit", ...options, env: childEnv(options.env) });
+    const child = spawn(command, args, { stdio: "inherit", ...spawnOptions, env: impure ? (options.env ?? process.env) : childEnv(options.env) });
     child.on("error", (err) => fail(`cannot run ${command}: ${err.message}`));
     child.on("exit", (code, signal) => resolve(signal ? 128 + (os.constants.signals[signal] ?? 0) : code));
   });
@@ -666,8 +667,7 @@ function readLock(root) {
   }
   const yaml = toolLockfilePath(root);
   if (!fs.existsSync(yaml) || hexDigest(fs.readFileSync(yaml)) !== lockfile.pnpmLockHash) {
-    console.error(`pnpm-purifier: pnpm-lock.yaml changed since ${LOCK_FILE} was written, so pnpm runs online; run \`pnpm-purifier lock\` to lock it again`);
-    return false;
+    fail(`pnpm-lock.yaml changed since ${LOCK_FILE} was written; run \`pnpm-purifier lock\` to lock it again, or use --online explicitly`);
   }
   return true;
 }
@@ -733,11 +733,11 @@ async function online(root, args) {
 
 async function interactive(args) {
   const root = process.cwd();
-  if (process.env.PNPM_PURIFIER === "0" || !fs.existsSync(toolLockfilePath(root)) || !fs.existsSync(lockfilePath(root))) {
-    if (process.env.PNPM_PURIFIER !== "0") console.error("pnpm-purifier: warning: no complete pnpm purifier lockfiles found; running pnpm impurely. Run `pnpm-purifier lock` to use Nix-resolved dependencies.");
-    process.exit(await run(pnpmCommand(root), args, {}));
-  }
   if (args[0] === "--online") process.exit(await online(root, args.slice(1)));
+  if (process.env.PNPM_PURIFIER === "0" || (!fs.existsSync(toolLockfilePath(root)) && !fs.existsSync(lockfilePath(root)))) {
+    if (process.env.PNPM_PURIFIER !== "0") console.error("pnpm-purifier: warning: no complete pnpm purifier lockfiles found; running pnpm impurely. Run `pnpm-purifier lock` to use Nix-resolved dependencies.");
+    process.exit(await run(pnpmCommand(root), args, { impure: true }));
+  }
   if (isResolving(args)) {
     console.error(`pnpm-purifier: \`pnpm ${args.join(" ")}\` resolves versions from registry metadata, so it runs online`);
     process.exit(await online(root, args));

@@ -391,6 +391,7 @@ const INSTALLING = new Set(["install", "i", "ci", "fetch", "rebuild", "rb", "dep
 // exec, a script name, ...) download nothing, so they run without the
 // local registry.
 export function needsRegistry(args) {
+  if (args.some((arg) => ["--version", "-v", "--help", "-h"].includes(arg))) return false;
   const words = [];
   for (let i = 0; i < args.length; i++) {
     if (VALUE_OPTIONS.has(args[i])) i++;
