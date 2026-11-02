@@ -289,7 +289,8 @@ downloads templates from git repositories. It is a pnpm project with a
 checkout of giget:
 
 ```zsh
-nix run github:nix-purifiers/pnpm-purifier -- lock
+nix shell 'github:nix-purifiers/pnpm-purifier'
+pnpm-purifier lock
 ```
 
 The lock run says that giget needs no `pnpm-purifier.lock.json`, because
@@ -313,7 +314,8 @@ in
 The everyday loop runs through pnpm-purifier:
 
 ```zsh
-alias pnpm='nix run github:nix-purifiers/pnpm-purifier --'
+nix shell 'github:nix-purifiers/pnpm-purifier'
+alias pnpm=pnpm-purifier
 pnpm install
 pnpm run build
 pnpm exec vitest run
