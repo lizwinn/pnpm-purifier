@@ -87,7 +87,8 @@ repository of the project or in another one:
 
 ```nix
 {
-  inputs.pnpm-purifier.url = "github:nix-purifiers/pnpm-purifier";
+  inputs.pnpm-purifier.url =
+    "github:nix-purifiers/pnpm-purifier";
   inputs.nixpkgs.follows = "pnpm-purifier/nixpkgs";
 
   outputs =
@@ -98,7 +99,9 @@ repository of the project or in another one:
         inherit system;
         overlays = [ pnpm-purifier.overlays.default ];
       };
-      project = pkgs.pnpm-purifier.buildPnpmProject { src = ./.; };
+      project = pkgs.pnpm-purifier.buildPnpmProject {
+        src = ./.;
+      };
     in
     {
       packages.${system}.example-app =
