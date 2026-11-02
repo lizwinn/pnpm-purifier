@@ -101,7 +101,8 @@ repository of the project or in another one:
   inputs.pnpm-purifier.url = "github:nix-purifiers/pnpm-purifier";
   inputs.nixpkgs.follows = "pnpm-purifier/nixpkgs";
 
-  outputs = { nixpkgs, pnpm-purifier, ... }:
+  outputs =
+    { nixpkgs, pnpm-purifier, ... }:
     let
       system = "x86_64-linux";
       pkgs = import nixpkgs {
@@ -111,7 +112,8 @@ repository of the project or in another one:
       project = pkgs.pnpm-purifier.buildPnpmProject { src = ./.; };
     in
     {
-      packages.${system}.example-app = project.packages."@example/app";
+      packages.${system}.example-app =
+        project.packages."@example/app";
       checks.${system}.tests = project.tests;
     };
 }
@@ -163,15 +165,15 @@ For an ad hoc build, the builder can also be evaluated directly from the
 project root. Replace the example package name with one from your project:
 
 ```zsh
-nix build --impure --expr '
-  let
-    purifier = builtins.getFlake "github:nix-purifiers/pnpm-purifier";
-    pkgs = import purifier.inputs.nixpkgs {
-      system = builtins.currentSystem;
-      overlays = [ purifier.overlays.default ];
-    };
-  in
-  (pkgs.pnpm-purifier.buildPnpmProject { src = ./.; }).packages."@example/app"'
+nix build --impure --expr 'let
+  purifier = builtins.getFlake "github:nix-purifiers/pnpm-purifier";
+  pkgs = import purifier.inputs.nixpkgs {
+    system = builtins.currentSystem;
+    overlays = [ purifier.overlays.default ];
+  };
+in
+(pkgs.pnpm-purifier.buildPnpmProject { src = ./.; })
+.packages."@example/app"'
 ```
 
 This uses the purifier's pinned nixpkgs, matching the lock command above.
@@ -307,15 +309,15 @@ integrity hash. The build from the directory of giget is the Quickstart
 build with the name of the package:
 
 ```zsh
-nix build --impure --expr '
-  let
-    purifier = builtins.getFlake "github:nix-purifiers/pnpm-purifier";
-    pkgs = import purifier.inputs.nixpkgs {
-      system = builtins.currentSystem;
-      overlays = [ purifier.overlays.default ];
-    };
-  in
-  (pkgs.pnpm-purifier.buildPnpmProject { src = ./.; }).packages.giget'
+nix build --impure --expr 'let
+  purifier = builtins.getFlake "github:nix-purifiers/pnpm-purifier";
+  pkgs = import purifier.inputs.nixpkgs {
+    system = builtins.currentSystem;
+    overlays = [ purifier.overlays.default ];
+  };
+in
+(pkgs.pnpm-purifier.buildPnpmProject { src = ./.; })
+.packages.giget'
 ./result/bin/giget --help
 ```
 
