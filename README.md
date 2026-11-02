@@ -336,11 +336,5 @@ resolves online and locks again.
 
 ## Credits
 
-pnpm-purifier follows the design of sbt-nix-backend
-([nix-purifiers/sbt-purifier](https://github.com/nix-purifiers/sbt-purifier)):
-the tool still plans the build, a lock run records every download by URL
-and hash, and Nix fetches those files and runs the tool in its sandbox,
-offline. sbt-nix-backend in turn takes its model from nixcloud's
-[cargo (libnix)](https://github.com/nixcloud/cargo). The fetching of
-download entries and npm's platform filters come from the shared
-[purifier](https://github.com/nix-purifiers/purifier) library.
+The purifier idea was inspired by nixcloud's
+[cargo (libnix)](https://github.com/nixcloud/cargo).

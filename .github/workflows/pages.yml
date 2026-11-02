@@ -34,35 +34,15 @@ jobs:
       - name: Configure Pages
         id: pages
         uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
+      - name: Check out the shared documentation theme
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: nix-purifiers/nix-purifiers.github.io
+          ref: 709850fbe1ec627f25daf66a6b74ca0953700b54
+          path: .pages-theme
+          persist-credentials: false
       - name: Prepare the project documentation
-        run: |
-          python3 - <<'PYTHON'
-          import json
-          import os
-          import pathlib
-          import re
-
-          repository = os.environ["GITHUB_REPOSITORY"]
-          source = pathlib.Path(".pages-source")
-          source.mkdir()
-          text = pathlib.Path("README.md").read_text()
-          # Source-file links belong on GitHub; in-page and external links stay.
-          text = re.sub(
-              r"(?<!!)\]\((?!https?://|mailto:|#|/)([^)]+)\)",
-              lambda match: "](" + "https://github.com/" + repository
-              + "/blob/main/" + match.group(1) + ")",
-              text,
-          )
-          (source / "index.md").write_text("---\nlayout: default\n---\n\n" + text)
-          (source / "_config.yml").write_text(json.dumps({
-              "title": repository.split("/")[1],
-              "description": "Native development with locked, Nix-resolved dependencies",
-              "theme": "jekyll-theme-minimal",
-              "repository": repository,
-              "url": "https://nix-purifiers.github.io",
-              "baseurl": "/" + repository.split("/")[1],
-          }))
-          PYTHON
+        run: python3 .pages-theme/docs-site/prepare.py --repository "$GITHUB_REPOSITORY"
       - name: Build the project site
         uses: actions/jekyll-build-pages@44a6e6beabd48582f863aeeb6cb2151cc1716697 # v1
         with:
