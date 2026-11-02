@@ -16,33 +16,12 @@ registry mirrors upstream URLs, so
 `https/registry.npmjs.org/ms/-/ms-2.1.3.tgz` on it, which is also the
 file's `path` in the lock.
 
-## Installation
-
-Install the integration into your Nix profile once:
-
-```sh
-nix profile install 'github:nix-purifiers/pnpm-purifier'
-```
-
-The required wrapper is `pnpm-purifier`; pass your usual tool
-arguments after it. With neither pnpm-lock.yaml nor a purifier lockfile, it warns on standard error
-and runs the ordinary tool with impure resolution.
-
-You can keep the usual command spelling with `alias pnpm=pnpm-purifier`
-in your shell configuration.
-
-`nix shell` makes an integration available temporarily instead of installing
-it. Keep using the activation steps below where a project environment or
-prefetched cache is required.
-
 ## Quickstart
 
-Install Nix, then run the following from your existing project's root.
-The setup prepares the locked dependencies and the integration that
-pnpm's normal commands use:
+From the project root:
 
 ```zsh
-nix shell github:nix-purifiers/pnpm-purifier
+nix shell 'github:nix-purifiers/pnpm-purifier'
 alias pnpm=pnpm-purifier
 pnpm-purifier lock
 pnpm install
@@ -58,6 +37,16 @@ No project Nix files are needed for this workflow.
 
 Sandboxed builds of the whole project are an optional
 [next step](#building-the-project-with-nix).
+
+The required wrapper is `pnpm-purifier`; pass your usual tool
+arguments after it. With neither pnpm-lock.yaml nor a purifier lockfile, it warns on standard error
+and runs the ordinary tool with impure resolution.
+
+You can keep the usual command spelling with `alias pnpm=pnpm-purifier`
+in your shell configuration.
+
+For persistent use, add these packages through your usual Nix configuration.
+
 
 ## Development loop
 
