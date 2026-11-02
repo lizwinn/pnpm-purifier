@@ -5,8 +5,6 @@ Nix-resolved dependencies. Use the normal build and test commands in your
 working tree; building the project itself in the Nix sandbox is an
 optional next step.
 
-It follows the [purifier contract](https://github.com/nix-purifiers/purifier/blob/main/CONTRACT.md).
-
 pnpm reads every package through a registry on the loopback interface that
 pnpm-purifier runs. During the lock run the registry forwards each request
 upstream and records what comes back. A second install then runs from the
