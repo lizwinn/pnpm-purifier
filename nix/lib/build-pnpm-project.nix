@@ -43,6 +43,9 @@ scope@{
   makeWrapper,
   nodejs,
   linkFarm,
+  runCommand,
+  python3,
+  nix,
   writeText,
   callPackage,
   purifier,
@@ -53,6 +56,11 @@ scope@{
   # Fetchers for the purifier library's fetchEntry, by name, such as a
   # `fetchurl` for a mirror or for credentials.
   fetchers ? { },
+  dependencies ? purifier.lockedProjectInputs {
+    inputs =
+      if builtins.pathExists lockFile then (lib.importJSON lockFile).projectInputs or [ ] else [ ];
+    system = stdenv.hostPlatform.system;
+  },
   # The purifier lockfile; the default is the one `pnpm-purifier lock`
   # writes in the project, and a project without one builds from
   # pnpm-lock.yaml alone. A packaging flake keeps it outside `src` for a
@@ -79,10 +87,16 @@ scope@{
   srcFilter ? null,
 }:
 let
+  inputSelection = purifier.npmInputSelection { inherit dependencies; };
+  selectedInputs = inputSelection.inputs;
+  inputViews = writeText "pnpm-input-views.json" (builtins.toJSON inputSelection.views);
+
   # The lock in memory (read-lock.nix), which fails evaluation through the
   # library's checkLock when the lockfiles cannot be used.
   readLock = import ./read-lock.nix { inherit purifier; };
   lock = purifier.checkLock (readLock {
+    providedNames = inputSelection.names;
+    providedVersions = inputSelection.versions;
     inherit src lockFile pnpmLock;
   });
 
@@ -129,7 +143,7 @@ let
     filter = if srcFilter != null then srcFilter else defaultSrcFilter;
   };
 
-  dependencies = callPackage ./dependencies.nix {
+  lockedDependencies = callPackage ./dependencies.nix {
     entries = purifier.entriesFor stdenv.hostPlatform.system lock;
     inherit purifier fetchers;
   };
@@ -153,7 +167,7 @@ let
       commands,
     }:
     let
-      registry = "node ${cli} registry-exec --manifest ${dependencies} --registries ${registriesFile} --pin-project . --";
+      registry = "node ${cli} registry-exec --manifest ${lockedDependencies} --registries ${registriesFile} --pin-project . --";
       filterArgs = lib.optionalString (filter != null) "--filter ${lib.escapeShellArg filter}";
     in
     ''
@@ -164,8 +178,14 @@ let
       # node-gyp builds native addons against these headers rather than
       # downloading them.
       export npm_config_nodedir=${nodejs}
+      ${lib.optionalString (dependencies != [ ]) ''
+        export PNPM_PURIFIER_INPUT_VIEWS=${inputViews}
+        export pnpm_config_global_pnpmfile=${../../src/npm-inputs.cjs}
+        export npm_config_global_pnpmfile=${../../src/npm-inputs.cjs}
+      ''}
       mkdir -p "$HOME" "$XDG_RUNTIME_DIR"
       cp --no-preserve=mode ${pnpmLock} pnpm-lock.yaml
+      node ${../../src/npm-input-lock.mjs} pnpm-lock.yaml
       patchShebangs --build .
       ${registry} pnpm install --frozen-lockfile --store-dir "$TMPDIR/store" ${filterArgs}
       for modules in $(find . -name node_modules -type d -prune); do
@@ -272,7 +292,9 @@ let
       '';
 
       passthru = {
-        inherit dependencies lock;
+        inherit lock;
+        dependencies = lockedDependencies;
+        projections = projectionFor [ project.name ];
         pnpmProject = project;
         # The outputs of the project, known from the lockfile and its
         # package.json before the package is built: `bin.<name>`, the
@@ -326,23 +348,102 @@ let
   };
 
   # The tarballs of the projects that are not private, by their file names.
-  release = linkFarm "${rootName}-release" (
+  rawRelease = linkFarm "${rootName}-release" (
     lib.mapAttrsToList (_: p: {
       name = p.artifacts.tarballName;
       path = p.artifacts.tarball;
     }) (lib.filterAttrs (_: p: p.artifacts ? tarball) packages)
   );
+  release = rawRelease.overrideAttrs (previous: {
+    passthru = (previous.passthru or { }) // {
+      inherit projections;
+    };
+  });
+  capture = stdenv.mkDerivation {
+    name = "${rootName}-runtime-graph";
+    src = filteredSrc;
+    nativeBuildInputs = [
+      nodejs
+      pnpm'
+      nix
+    ]
+    ++ nativeBuildInputs;
+    dontConfigure = true;
+    buildPhase = installAndRun {
+      commands = ''
+        pnpm --include-workspace-root -r run --if-present ${lib.escapeShellArg buildScript}
+      '';
+    };
+    installPhase = ''
+      export NPM_PURIFIER_NPM_MODULES=${nodejs}/lib/node_modules/npm/node_modules
+      export NPM_PROJECTION_NIX=${nix}/bin/nix
+      mkdir -p "$TMPDIR/projection-archives"
+      export PNPM_PROJECTION_ARCHIVES="$TMPDIR/projection-archives"
+      node - ${
+        writeText "pnpm-projection-packages.json" (
+          builtins.toJSON (
+            lib.mapAttrsToList
+              (_: package: {
+                name = package.pnpmProject.name;
+                dir = package.pnpmProject.path;
+                archive = if package.artifacts ? tarball then package.artifacts.tarball else null;
+              })
+              (
+                lib.filterAttrs (
+                  _: package:
+                  let
+                    manifest = lib.importJSON (src + "/${package.pnpmProject.path}/package.json");
+                  in
+                  package.artifacts ? tarball || manifest ? version || manifest ? bin
+                ) packages
+              )
+          )
+        )
+      } "$TMPDIR/own-packages.json" <<'NODE'
+      const fs = require('node:fs');
+      const path = require('node:path');
+      const { execFileSync } = require('node:child_process');
+      const own = JSON.parse(fs.readFileSync(process.argv[2]));
+      for (const [index, item] of own.entries()) {
+        if (item.archive) continue;
+        const destination = path.join(process.env.PNPM_PROJECTION_ARCHIVES, String(index));
+        fs.mkdirSync(destination, {recursive:true});
+        execFileSync('pnpm', ['--filter', item.name, 'pack', '--pack-destination', destination], {stdio:'inherit'});
+        item.archive = path.join(destination, fs.readdirSync(destination).find(name=>name.endsWith('.tgz')));
+      }
+      fs.writeFileSync(process.argv[3], JSON.stringify(own));
+      NODE
+      node ${purifier.npmCaptureTool} "$PWD" ${release} "$out" "$TMPDIR/own-packages.json"
+    '';
+    dontFixup = true;
+  };
+  projectionFor =
+    roots:
+    purifier.npmProjections {
+      graph = "${capture}/graph.json";
+      archives = "${capture}/archives";
+      producer = release;
+      inherit
+        roots
+        dependencies
+        runCommand
+        python3
+        ;
+    };
+  projections = projectionFor null;
+
 in
 {
   inherit
     lock
-    dependencies
     registries
     registriesFile
     packages
     tests
     release
+    projections
     ;
+  dependencies = lockedDependencies;
   fetches = lock.entries;
   pnpm = pnpm';
 }

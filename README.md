@@ -71,6 +71,27 @@ nixpkgs (pnpm 10, 11 or 12), and keeps pnpm on that version.
 installs twice, once online, recording, and once offline from what it
 recorded.
 
+## Dependencies from another purified project
+
+```sh
+pnpm-purifier lock \
+  --input 'github:example/library#library'
+pnpm-purifier install --frozen-lockfile
+```
+
+The input can export an npm repository from pnpm or another JavaScript
+purifier. Its Nix source identity is pinned; supplied packages have no
+duplicate download entries. The purifier binds those packages automatically,
+leaving your `package.json` unchanged. `pnpm-purifier update` refreshes the
+inputs.
+
+Nix builds accept producer packages through `dependencies`. Project and
+package outputs expose `projections.npm`; a package's projection includes
+its runtime dependencies. The exported metadata uses immutable Nix identities
+that ordinary npm consumers can resolve. With composed inputs,
+`pnpm-purifier publish` uploads those exact archives using pnpm's
+credentials and options, under the `nix` tag unless you choose another tag.
+
 ## Building the project with Nix
 
 Once the native development workflow is working, you can also build and

@@ -15,6 +15,7 @@
   runCommand,
   makeWrapper,
   nodejs,
+  python3,
   nix-prefetch-git,
   pnpm,
   pnpm_10 ? null,
@@ -54,6 +55,8 @@ runCommand "pnpm-purifier"
       --set-default PNPM_PURIFIER_NIX_LIB "$share/nix/lib" \
       --set-default PNPM_PURIFIER_NIXPKGS ${pkgs.path} \
       --set-default PNPM_PURIFIER_LIBRARY ${purifierSource} \
+      --set-default PNPM_PURIFIER_INPUT_TOOLS ${purifierSource}/tools \
+      --set-default PNPM_PURIFIER_PYTHON ${python3.interpreter} \
       --set-default PNPM_PURIFIER_PNPMS ${lib.escapeShellArg (builtins.toJSON pnpms)} \
       --prefix PATH : ${lib.makeBinPath [ nix-prefetch-git ]} \
       --suffix PATH : ${

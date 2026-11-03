@@ -23,6 +23,8 @@
   registries,
   admits,
   lock ? null,
+  providedNames ? [ ],
+  providedVersions ? [ ],
   # The pnpm-lock.yaml, for messages.
   pnpmLockName ? "pnpm-lock.yaml",
 }:
@@ -143,7 +145,11 @@ let
       tarball = r.tarball or null;
       local = r ? directory || (tarball != null && match "file:.*" tarball != null);
     in
-    if local then
+    if
+      local
+      || builtins.elem p.name providedNames
+      || builtins.any (item: item.name == p.name && item.version == p.version) providedVersions
+    then
       {
         entries = [ ];
         problems = [ ];

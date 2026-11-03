@@ -19,6 +19,8 @@
 { purifier }:
 {
   src,
+  providedNames ? [ ],
+  providedVersions ? [ ],
   lockFile ? src + "/pnpm-purifier.lock.json",
   pnpmLock ? src + "/pnpm-lock.yaml",
 }:
@@ -53,7 +55,12 @@ let
     if pathExists pnpmLock then
       import ./entries.nix {
         pnpmLockText = readFile pnpmLock;
-        inherit registries lock;
+        inherit
+          registries
+          lock
+          providedNames
+          providedVersions
+          ;
         inherit (purifier) admits;
         pnpmLockName = toString pnpmLock;
       }

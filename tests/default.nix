@@ -83,6 +83,8 @@ let
 in
 {
   inherit cli;
+  composition-producer = greet;
+  composition-repository = workspace.projections.npm;
 
   # A caller needs only the pnpm major used by its project, rather than
   # every major that the purifier can build with.
