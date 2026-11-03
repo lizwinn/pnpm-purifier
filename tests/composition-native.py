@@ -20,7 +20,8 @@ with tempfile.TemporaryDirectory(prefix='pnpm-native-composition-') as temporary
     env=dict(os.environ,PNPM_COMPOSITION_FLAKE=snapshot)
     sdk_expr='let f=builtins.getFlake ("path:"+builtins.getEnv "PNPM_COMPOSITION_FLAKE"); in f.inputs.nixpkgs.legacyPackages.'+system+'.nodejs'
     sdk=Path(subprocess.check_output(['nix','build','--impure','--expr',sdk_expr,'--out-link',str(temporary/'sdk'),'--print-out-paths'],env=env,text=True).strip())
-    env.update(PATH=str(sdk/'bin')+':'+env['PATH'],npm_config_update_notifier='false',FORCE_COLOR='0')
+    env.update(PATH=str(sdk/'bin')+':'+env['PATH'],npm_config_update_notifier='false',NO_COLOR='1')
+    env.pop('FORCE_COLOR',None)
     project=temporary/'project'
     project.mkdir()
     manifest={'name':'pnpm-composed','version':'1.0.0','license':'MIT','type':'module','packageManager':'pnpm@12.9.0',
@@ -66,7 +67,7 @@ with tempfile.TemporaryDirectory(prefix='pnpm-native-composition-') as temporary
         return Path(subprocess.check_output(['nix','build','--impure','--expr','('+expression+').'+attribute,
             '--out-link',str(temporary/attribute.replace('.','-')),'--print-out-paths'],env=env,text=True).strip())
     installed=build('packages.pnpm-composed')
-    assert 'Hello, composed!' in subprocess.check_output([str(installed/'bin/pnpm-composed')],text=True)
+    assert 'Hello, composed!' in subprocess.check_output([str(installed/'bin/pnpm-composed')],env=env,text=True)
     external=temporary/'external'
     external.mkdir()
     external_manifest={**manifest,'name':'external-composed','bin':{'external-composed':'index.js'}}
@@ -100,7 +101,7 @@ snapshots:
     external_env=dict(env,PNPM_EXTERNAL_PROJECT=str(external))
     external_output=Path(subprocess.check_output(['nix','build','--impure','--expr',external_expression,
         '--out-link',str(temporary/'external-output'),'--print-out-paths'],env=external_env,text=True).strip())
-    assert 'Hello, composed!' in subprocess.check_output([str(external_output/'bin/external-composed')],text=True)
+    assert 'Hello, composed!' in subprocess.check_output([str(external_output/'bin/external-composed')],env=env,text=True)
     assert (external/'pnpm-lock.yaml').read_text()==external_lock
     repository=build('release.projections.npm')
     catalog_path=subprocess.check_output(['nix','eval','--impure','--raw','--expr','('+expression+').release.projections.npm.catalog'],env=env,text=True).strip()
