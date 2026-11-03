@@ -45,6 +45,7 @@ let
   lockSystems = [
     "x86_64-linux"
     "aarch64-linux"
+    "aarch64-darwin"
   ];
 
   # The lockfile path of an upstream URL: the scheme, the host (a port

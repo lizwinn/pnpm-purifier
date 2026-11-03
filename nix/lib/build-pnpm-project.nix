@@ -212,6 +212,31 @@ let
     ' ${dir}/package.json
   '';
 
+  # `pnpm deploy` names each workspace dependency by its absolute path, in
+  # the build directory: in package.json and pnpm-lock.yaml and, with "+"
+  # for "/", in its directory under node_modules/.pnpm and the links to it.
+  # Linux builds always run in /build, but darwin builds run in a new
+  # directory each time, so the build directory is written as /build there
+  # too.
+  rewriteBuildDir = dir: ''
+    top=$(cd "$NIX_BUILD_TOP" && pwd -P)
+    if [ "$top" != /build ]; then
+      encoded=''${top//\//+}
+      for entry in ${dir}/node_modules/.pnpm/*"$encoded"*; do
+        if [ -e "$entry" ]; then mv "$entry" "''${entry//"$encoded"/+build}"; fi
+      done
+      find ${dir} -type l | while read -r link; do
+        target=$(readlink "$link")
+        case $target in
+          *"$encoded"*) ln -sfn "''${target//"$encoded"/+build}" "$link" ;;
+        esac
+      done
+      { grep -rlIF "$top" ${dir} || true; } | while read -r file; do
+        sed -i "s|$top|/build|g" "$file"
+      done
+    fi
+  '';
+
   mkPackage =
     project:
     let
@@ -278,6 +303,7 @@ let
         mkdir -p "$(dirname "${deployed}")"
         cp -r ${if atRoot then "." else ''"$TMPDIR/deploy"''} "${deployed}"
         ${removeInstallState ''"${deployed}"''}
+        ${rewriteBuildDir ''"${deployed}"''}
         ${lib.concatStrings (
           lib.mapAttrsToList (bin: file: ''
             makeWrapper ${lib.getExe nodejs} "$out/bin/${bin}" \

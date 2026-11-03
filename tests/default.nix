@@ -285,6 +285,10 @@ in
         mkdir -p "$HOME" "$XDG_RUNTIME_DIR"
         [ "$(ls ${workspace.release})" = example-greet-1.0.0.tgz ]
         node ${./fake-registry.mjs} "$TMPDIR/port" "$TMPDIR/published.tgz" &
+        # Darwin builds have no PID namespace, so a registry left running
+        # would keep the build's log open after the builder exits.
+        server=$!
+        trap 'kill $server' EXIT
         while [ ! -s "$TMPDIR/port" ]; do sleep 0.1; done
         port=$(cat "$TMPDIR/port")
         echo "//127.0.0.1:$port/:_authToken=check" > "$HOME/.npmrc"
@@ -305,7 +309,7 @@ in
   '';
 
   # A build reads the native packages of its own system only. The lock
-  # holds esbuild's binary package for each Linux system, with the one
+  # holds esbuild's binary package for each system it covers, with the one
   # system it is for in `systems`, and the manifest of the host system
   # holds that system's one. `fetches` lists the entries of every system
   # for SBOM and license tools.
@@ -315,6 +319,7 @@ in
         {
           x86_64-linux = "linux-x64";
           aarch64-linux = "linux-arm64";
+          aarch64-darwin = "darwin-arm64";
         }
         .${pkgs.stdenv.hostPlatform.system};
       esbuildFetches = builtins.filter (e: lib.hasInfix "/@esbuild/" e.path) workspace.fetches;
@@ -329,6 +334,7 @@ in
       ) == {
         linux-x64 = [ "x86_64-linux" ];
         linux-arm64 = [ "aarch64-linux" ];
+        darwin-arm64 = [ "aarch64-darwin" ];
       };
     pkgs.runCommand "platform-filters" { nativeBuildInputs = [ pkgs.jq ]; } ''
       jq -r 'keys[] | select(contains("/@esbuild/"))' ${workspace.dependencies} > esbuild
